@@ -19,6 +19,9 @@ Built as a coding assessment submission — designed to demonstrate clean archit
 - [Testing](#testing)
 - [Project Structure](#project-structure)
 - [System Design Patterns](#system-design-patterns)
+- [Caching](#caching)
+- [Logging](#logging)
+- [Kafka Integration](#kafka-integration)
 - [Design Decisions & Trade-offs](#design-decisions--trade-offs)
 - [AI-Assisted Development: What Worked, What Broke, How I Fixed It](#ai-assisted-development-what-worked-what-broke-how-i-fixed-it)
 - [Human Judgment: What Only a Developer Could Do](#human-judgment-what-only-a-developer-could-do)
@@ -517,6 +520,132 @@ This isn't full event sourcing (we don't replay events to rebuild state), but it
 | **Builder** | Creational | Lombok @Builder on all models | Readable, safe multi-field construction |
 | **Factory Method** | Creational | OrderMapper static methods | Encapsulated entity/DTO construction |
 | **Event Sourcing Lite** | Architectural | OrderAuditLog | Full order lifecycle traceability |
+
+---
+
+## Caching
+
+### Strategy: Caffeine In-Memory Cache
+
+We use **Caffeine** (the successor to Guava Cache) as a high-performance L1 cache for order reads.
+
+| Cache Name | What's Cached | TTL | Max Entries | Eviction |
+|---|---|---|---|---|
+| `orders` | Single order by ID (`getOrder`) | 10 min | 500 | On update, cancel, or bulk promote |
+| `orderList` | List queries (all / by status) | 10 min | 500 | On any write operation |
+
+### How It Works
+
+```
+GET /api/orders/42        → Cache HIT  → Return instantly (no DB query)
+GET /api/orders/42        → Cache MISS → Query DB → Store in cache → Return
+POST /api/orders          → @CacheEvict("orderList") → Invalidates list cache
+PATCH /api/orders/42/status → @CacheEvict("orders", "orderList") → Invalidates both
+```
+
+### Configuration
+
+`CacheConfig.java` sets up Caffeine with `recordStats()` enabled — in production, you'd expose cache hit/miss metrics via Spring Actuator for monitoring.
+
+### Why Caffeine over Redis?
+
+For a single-instance H2-backed application, an in-process cache avoids network overhead. In a multi-instance production deployment, you'd swap to **Redis** (or add it as L2 behind Caffeine) by simply changing the `CacheManager` bean — zero changes to the `@Cacheable` annotations.
+
+---
+
+## Logging
+
+### Architecture
+
+We use **SLF4J + Logback** with a production-grade configuration:
+
+| Component | Level | Purpose |
+|---|---|---|
+| `com.ecommerce.order` | INFO | Business operations (order created, status changed, cancelled) |
+| `com.ecommerce.order.scheduler` | DEBUG | Scheduler heartbeat and promotion counts |
+| `com.ecommerce.order.event` | INFO | Kafka/event publishing confirmations |
+| `org.hibernate.SQL` | WARN | Suppress SQL noise in production |
+| `org.springframework` | WARN | Suppress framework noise |
+
+### Output Targets
+
+1. **Console** — Structured format: `timestamp [thread] level logger - message`
+2. **Rolling File** — `logs/order-processing.log` with:
+   - Size-based rotation: 10MB per file
+   - Time-based rotation: daily
+   - Retention: 30 days, 100MB total cap
+
+### What Gets Logged
+
+```
+2026-04-17 10:15:30.123 [http-nio-8080-exec-1] INFO  c.e.order.service.OrderService - Created order id=42 for customer=alice@example.com
+2026-04-17 10:15:45.456 [http-nio-8080-exec-3] INFO  c.e.order.service.OrderService - Order id=42 status changed PENDING -> PROCESSING
+2026-04-17 10:20:00.001 [scheduling-1] DEBUG c.e.o.scheduler.OrderStatusScheduler - Running scheduled promotion of PENDING orders to PROCESSING
+2026-04-17 10:20:00.050 [scheduling-1] INFO  c.e.order.service.OrderService - Promoted 5 PENDING order(s) to PROCESSING
+2026-04-17 10:15:30.130 [http-nio-8080-exec-1] INFO  c.e.o.event.OrderEventListener - [NOTIFICATION] Order #42 confirmation sent to alice@example.com
+```
+
+---
+
+## Kafka Integration
+
+### Design: Profile-Gated Event Publishing
+
+Kafka is integrated as a **profile-gated addon** — the app runs perfectly without Kafka (default), and enabling the `kafka` profile activates event publishing to Kafka topics.
+
+```
+# Default (no Kafka needed):
+java -jar order-processing-system-1.0.0.jar
+
+# With Kafka enabled:
+java -jar order-processing-system-1.0.0.jar --spring.profiles.active=kafka
+```
+
+### Architecture
+
+```
+OrderService ──publishes──→ Spring ApplicationEvent
+                              │
+                              ├──→ OrderEventListener (BEFORE_COMMIT)
+                              │      └── Writes audit log (always active)
+                              │
+                              └──→ KafkaOrderEventPublisher (AFTER_COMMIT, kafka profile only)
+                                     └── Publishes to Kafka topics
+```
+
+### Kafka Topics
+
+| Topic | Key | Payload | Published On |
+|---|---|---|---|
+| `order-events` | Order ID | Full order creation details | Order created |
+| `order-status-changes` | Order ID | Old status, new status, reason | Any status transition |
+
+### Producer Configuration
+
+- **Acks:** `all` (waits for all replicas — max durability)
+- **Retries:** 3 (with idempotence enabled — no duplicate messages)
+- **Serialization:** String key + JSON value
+- **Partitioning:** By order ID — ensures all events for an order go to the same partition (ordering guarantee)
+
+### Why Profile-Gated?
+
+1. **Standalone operation:** Reviewers can run the app with zero infrastructure (just `mvn spring-boot:run`)
+2. **Production-ready:** Flip one flag to enable real Kafka publishing
+3. **Testability:** Unit/integration tests run without a Kafka broker
+4. **Adapter Pattern:** Same domain events, different transports — adding RabbitMQ, SNS, or webhooks follows the same pattern
+
+### Sample Kafka Message
+
+```json
+{
+  "eventType": "STATUS_CHANGED",
+  "orderId": 42,
+  "previousStatus": "PENDING",
+  "newStatus": "PROCESSING",
+  "reason": "Status updated from PENDING to PROCESSING",
+  "occurredAt": "2026-04-17T10:15:45.456"
+}
+```
 
 ---
 

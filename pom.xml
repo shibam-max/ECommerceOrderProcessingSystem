@@ -55,6 +55,23 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring Cache + Caffeine (high-performance in-memory cache) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-cache</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+            <version>2.9.3</version>
+        </dependency>
+
+        <!-- Spring Kafka (activated only with 'kafka' profile) -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+
         <!-- SpringDoc OpenAPI (Swagger UI) for Spring Boot 2.x / Java 8 -->
         <dependency>
             <groupId>org.springdoc</groupId>
