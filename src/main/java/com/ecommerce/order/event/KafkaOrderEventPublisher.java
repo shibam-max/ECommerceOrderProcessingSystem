@@ -2,6 +2,9 @@ package com.ecommerce.order.event;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
@@ -12,18 +15,23 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.util.concurrent.ListenableFutureCallback;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Kafka-based event publisher — bridges Spring domain events to Kafka topics.
+ * Kafka-based event publisher with Circuit Breaker protection.
  *
  * Activated ONLY when the 'kafka' profile is enabled.
- * Without it, domain events are still processed by OrderEventListener (in-process).
- * With it, events are ALSO published to Kafka for external consumers
- * (analytics services, notification microservices, data pipelines).
  *
- * This demonstrates the Adapter pattern: same domain events, different transport.
+ * Circuit Breaker config:
+ *   - Opens after 50% failure rate in a sliding window of 10 calls
+ *   - Stays open for 30 seconds before half-opening
+ *   - Prevents cascade failures when Kafka broker is down —
+ *     the order API continues working, events queue up for retry
+ *
+ * This demonstrates the Adapter pattern + Circuit Breaker pattern:
+ * same domain events, different transport, with resilience.
  */
 @Component
 @Profile("kafka")
@@ -35,11 +43,27 @@ public class KafkaOrderEventPublisher {
 
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
+    private final CircuitBreaker circuitBreaker;
 
     public KafkaOrderEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
                                     ObjectMapper objectMapper) {
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;
+
+        CircuitBreakerConfig config = CircuitBreakerConfig.custom()
+                .failureRateThreshold(50)
+                .slidingWindowSize(10)
+                .waitDurationInOpenState(Duration.ofSeconds(30))
+                .permittedNumberOfCallsInHalfOpenState(3)
+                .minimumNumberOfCalls(5)
+                .build();
+
+        this.circuitBreaker = CircuitBreakerRegistry.of(config)
+                .circuitBreaker("kafkaPublisher");
+
+        circuitBreaker.getEventPublisher()
+                .onStateTransition(event ->
+                        log.warn("[CIRCUIT-BREAKER] Kafka publisher state: {}", event.getStateTransition()));
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -52,7 +76,7 @@ public class KafkaOrderEventPublisher {
         payload.put("totalAmount", event.getTotalAmount());
         payload.put("occurredAt", event.getOccurredAt().toString());
 
-        publish(ORDER_EVENTS_TOPIC, String.valueOf(event.getOrderId()), payload);
+        publishWithCircuitBreaker(ORDER_EVENTS_TOPIC, String.valueOf(event.getOrderId()), payload);
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -65,7 +89,15 @@ public class KafkaOrderEventPublisher {
         payload.put("reason", event.getReason());
         payload.put("occurredAt", event.getOccurredAt().toString());
 
-        publish(STATUS_CHANGES_TOPIC, String.valueOf(event.getOrderId()), payload);
+        publishWithCircuitBreaker(STATUS_CHANGES_TOPIC, String.valueOf(event.getOrderId()), payload);
+    }
+
+    private void publishWithCircuitBreaker(String topic, String key, Map<String, Object> payload) {
+        try {
+            circuitBreaker.executeRunnable(() -> publish(topic, key, payload));
+        } catch (Exception e) {
+            log.error("[CIRCUIT-BREAKER] Kafka publish rejected (circuit OPEN) topic={} key={}", topic, key);
+        }
     }
 
     private void publish(String topic, String key, Map<String, Object> payload) {
@@ -75,7 +107,7 @@ public class KafkaOrderEventPublisher {
                     .addCallback(new ListenableFutureCallback<SendResult<String, String>>() {
                         @Override
                         public void onSuccess(SendResult<String, String> result) {
-                            log.info("[KAFKA] Published to {}  key={} offset={}",
+                            log.info("[KAFKA] Published to {} key={} offset={}",
                                     topic, key, result.getRecordMetadata().offset());
                         }
 

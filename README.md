@@ -19,6 +19,7 @@ Built as a coding assessment submission — designed to demonstrate clean archit
 - [Testing](#testing)
 - [Project Structure](#project-structure)
 - [System Design Patterns](#system-design-patterns)
+- [Distributed System Fundamentals](#distributed-system-fundamentals)
 - [Caching](#caching)
 - [Logging](#logging)
 - [Kafka Integration](#kafka-integration)
@@ -520,6 +521,152 @@ This isn't full event sourcing (we don't replay events to rebuild state), but it
 | **Builder** | Creational | Lombok @Builder on all models | Readable, safe multi-field construction |
 | **Factory Method** | Creational | OrderMapper static methods | Encapsulated entity/DTO construction |
 | **Event Sourcing Lite** | Architectural | OrderAuditLog | Full order lifecycle traceability |
+
+---
+
+## Distributed System Fundamentals
+
+This project implements six distributed system fundamentals that are non-negotiable in production microservice architectures. Each one is implemented in code, not just documented.
+
+### 1. Distributed Tracing (Correlation ID)
+
+**Problem:** In a microservice mesh, a single user action fans out across 5-10 services. When something fails, how do you trace the full request path?
+
+**Solution:** `CorrelationIdFilter` (highest-priority servlet filter) that:
+- Reads `X-Correlation-ID` from the incoming request (propagated from upstream service)
+- Generates a UUID if none provided (request originator)
+- Injects it into SLF4J MDC → **every log line includes the correlation ID**
+- Returns it in the response header → caller can correlate response to request
+
+```
+# Every log line now includes the correlation ID:
+2026-04-17 10:15:30.123 [http-nio-8080-exec-1] [a3f8b2c1-...] INFO OrderService - Created order id=42
+2026-04-17 10:15:30.130 [http-nio-8080-exec-1] [a3f8b2c1-...] INFO OrderEventListener - [NOTIFICATION] Order #42...
+```
+
+**File:** `CorrelationIdFilter.java`
+
+**Production extension:** Replace MDC with OpenTelemetry spans for full distributed tracing in Jaeger/Zipkin.
+
+### 2. Idempotency (Exactly-Once Semantics)
+
+**Problem:** Network timeouts, client retries, and load balancer failovers can cause the same request to arrive multiple times. Without protection, a retry creates a duplicate order.
+
+**Solution:** `IdempotencyFilter` intercepts all POST requests with an `X-Idempotency-Key` header:
+
+```
+# First request — processed normally:
+POST /api/orders  X-Idempotency-Key: order-abc-123  → 201 Created
+
+# Retry (same key) — returns cached response without re-executing:
+POST /api/orders  X-Idempotency-Key: order-abc-123  → 201 Created (X-Idempotent-Replayed: true)
+```
+
+**How it works:**
+1. On first request: execute operation, cache response (status + body) keyed by idempotency key
+2. On duplicate: return cached response immediately, no business logic executed
+3. TTL: 24 hours (Caffeine). In production: Redis with configurable TTL.
+
+**File:** `IdempotencyFilter.java`
+
+**Why this matters:** This is THE most critical distributed systems concept for e-commerce. Stripe, PayPal, and every payment API requires idempotency keys.
+
+### 3. Rate Limiting (API Protection)
+
+**Problem:** A misbehaving client (retry storm, bot, or DDoS) can overwhelm the service, causing cascading failures for all users.
+
+**Solution:** `RateLimitingFilter` implements a per-IP fixed-window rate limiter:
+
+```
+# Normal request:
+GET /api/orders  → 200 OK
+                   X-RateLimit-Limit: 100
+                   X-RateLimit-Remaining: 97
+
+# After exceeding 100 requests/minute:
+GET /api/orders  → 429 Too Many Requests
+                   Retry-After: 60
+                   {"status":429,"message":"Rate limit exceeded. Max 100 requests per minute."}
+```
+
+**Config:** 100 requests/minute per IP. Uses Caffeine (already a dependency) as the counter store.
+
+**File:** `RateLimitingFilter.java`
+
+**Production extension:** Redis-based sliding window for distributed rate limiting across instances.
+
+### 4. Circuit Breaker (Resilience)
+
+**Problem:** If Kafka is down, every order operation blocks on a failed Kafka publish, eventually exhausting thread pools and bringing down the entire API.
+
+**Solution:** Resilience4j `CircuitBreaker` wraps the Kafka publisher:
+
+```
+State: CLOSED (normal) → Kafka publish succeeds → all good
+State: CLOSED → 5+ failures with 50% failure rate → OPEN
+State: OPEN → All publishes short-circuited (no Kafka call) → API continues working
+State: OPEN → After 30 seconds → HALF_OPEN → Try 3 calls
+State: HALF_OPEN → Success → CLOSED (recovered)
+```
+
+**Config:**
+- Failure rate threshold: 50%
+- Sliding window: 10 calls
+- Wait in open state: 30 seconds
+- Half-open permitted calls: 3
+
+**File:** `KafkaOrderEventPublisher.java` (with circuit breaker)
+
+**Why this matters:** The order API NEVER goes down because Kafka is down. Events are lost temporarily (acceptable for analytics/notifications), but orders are always processed.
+
+### 5. Health Checks & Observability (Spring Actuator)
+
+**Problem:** Orchestrators (Kubernetes, ECS) need to know if the service is healthy. Monitoring systems need metrics.
+
+**Solution:** Spring Boot Actuator exposes:
+
+```
+GET /actuator/health    → {"status":"UP","components":{"db":{"status":"UP"},"diskSpace":{"status":"UP"}}}
+GET /actuator/info      → {"app":{"name":"Order Processing System","version":"1.0.0"}}
+GET /actuator/metrics   → Available metric names (JVM, HTTP, cache stats)
+GET /actuator/caches    → Cache manager details
+```
+
+**Exposed endpoints:** `health`, `info`, `metrics`, `caches` — minimal surface area (security-conscious).
+
+**Health details:** `show-details: always` for debugging. In production, use `show-details: when-authorized`.
+
+### 6. Graceful Shutdown
+
+**Problem:** During deployments, in-flight requests get killed mid-execution, leaving orders in inconsistent states.
+
+**Solution:** `server.shutdown: graceful` with a 30-second timeout:
+
+```yaml
+server:
+  shutdown: graceful
+spring.lifecycle:
+  timeout-per-shutdown-phase: 30s
+```
+
+On SIGTERM:
+1. Stop accepting new requests immediately
+2. Wait up to 30 seconds for in-flight requests to complete
+3. Run Spring shutdown hooks (close DB connections, flush caches)
+4. Exit cleanly
+
+**Why this matters:** Zero-downtime deployments in Kubernetes rely on graceful shutdown. Without it, rolling updates cause request failures.
+
+### Distributed Systems Summary
+
+| Fundamental | Pattern | File(s) | Production Upgrade |
+|---|---|---|---|
+| **Distributed Tracing** | Correlation ID propagation | `CorrelationIdFilter.java` | OpenTelemetry + Jaeger |
+| **Idempotency** | Request deduplication | `IdempotencyFilter.java` | Redis idempotency store |
+| **Rate Limiting** | Per-IP fixed window | `RateLimitingFilter.java` | Redis sliding window |
+| **Circuit Breaker** | Resilience4j on Kafka | `KafkaOrderEventPublisher.java` | Resilience4j dashboard |
+| **Health Checks** | Spring Actuator | `application.yml` | Prometheus + Grafana |
+| **Graceful Shutdown** | Spring lifecycle | `application.yml` | K8s preStop hook |
 
 ---
 
