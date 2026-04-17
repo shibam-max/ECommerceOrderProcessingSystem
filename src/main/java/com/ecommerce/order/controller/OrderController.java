@@ -1,5 +1,7 @@
 package com.ecommerce.order.controller;
 
+import com.ecommerce.order.audit.OrderAuditRepository;
+import com.ecommerce.order.audit.OrderAuditResponse;
 import com.ecommerce.order.dto.CreateOrderRequest;
 import com.ecommerce.order.dto.OrderResponse;
 import com.ecommerce.order.dto.UpdateStatusRequest;
@@ -13,6 +15,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import javax.validation.Valid;
+import java.util.ArrayList;
 import java.util.List;
 
 @RestController
@@ -21,9 +24,11 @@ import java.util.List;
 public class OrderController {
 
     private final OrderService orderService;
+    private final OrderAuditRepository auditRepository;
 
-    public OrderController(OrderService orderService) {
+    public OrderController(OrderService orderService, OrderAuditRepository auditRepository) {
         this.orderService = orderService;
+        this.auditRepository = auditRepository;
     }
 
     @PostMapping
@@ -60,5 +65,15 @@ public class OrderController {
     @Operation(summary = "Cancel an order", description = "Cancels a PENDING order — returns 409 if order is not in PENDING status")
     public ResponseEntity<OrderResponse> cancelOrder(@PathVariable Long id) {
         return ResponseEntity.ok(orderService.cancelOrder(id));
+    }
+
+    @GetMapping("/{id}/audit")
+    @Operation(summary = "Get order audit trail", description = "Returns the full audit history for an order — every status change, timestamps, and details")
+    public ResponseEntity<List<OrderAuditResponse>> getOrderAudit(@PathVariable Long id) {
+        orderService.getOrder(id);
+        List<OrderAuditResponse> responses = new ArrayList<>();
+        new ArrayList<>(auditRepository.findByOrderIdOrderByOccurredAtAsc(id))
+                .forEach(log -> responses.add(OrderAuditResponse.fromEntity(log)));
+        return ResponseEntity.ok(responses);
     }
 }

@@ -18,5 +18,18 @@ CREATE TABLE IF NOT EXISTS order_item (
         REFERENCES customer_order (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS order_audit_log (
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id     BIGINT       NOT NULL,
+    event_type   VARCHAR(30)  NOT NULL,
+    old_status   VARCHAR(20),
+    new_status   VARCHAR(20),
+    detail       VARCHAR(500),
+    occurred_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_audit_order FOREIGN KEY (order_id)
+        REFERENCES customer_order (id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_order_status ON customer_order (status);
 CREATE INDEX IF NOT EXISTS idx_order_customer_email ON customer_order (customer_email);
+CREATE INDEX IF NOT EXISTS idx_audit_order_id ON order_audit_log (order_id);

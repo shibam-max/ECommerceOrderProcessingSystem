@@ -18,6 +18,7 @@ Built as a coding assessment submission — designed to demonstrate clean archit
 - [Validation & Error Handling](#validation--error-handling)
 - [Testing](#testing)
 - [Project Structure](#project-structure)
+- [System Design Patterns](#system-design-patterns)
 - [Design Decisions & Trade-offs](#design-decisions--trade-offs)
 - [AI-Assisted Development: What Worked, What Broke, How I Fixed It](#ai-assisted-development-what-worked-what-broke-how-i-fixed-it)
 - [Human Judgment: What Only a Developer Could Do](#human-judgment-what-only-a-developer-could-do)
@@ -373,6 +374,149 @@ src/
     ├── scheduler/OrderStatusSchedulerTest.java
     └── service/OrderServiceTest.java
 ```
+
+---
+
+## System Design Patterns
+
+This project deliberately applies GoF and enterprise design patterns to solve real problems — not as academic exercises, but because each pattern earns its place.
+
+### Behavioral Patterns
+
+#### 1. Observer Pattern (Domain Events)
+
+**Problem:** When an order is created or its status changes, multiple side-effects must happen (audit logging, customer notifications, analytics). Putting all this in `OrderService` violates SRP and makes the service a growing monolith.
+
+**Solution:** Spring's `ApplicationEventPublisher` + `@TransactionalEventListener`. The service publishes domain events; listeners react independently.
+
+```
+OrderService ──publishes──→ OrderCreatedEvent ──→ OrderEventListener (audit log)
+             ──publishes──→ OrderStatusChangedEvent ──→ OrderEventListener (notification)
+                                                    ──→ (future: analytics, webhooks...)
+```
+
+**Files:** `OrderEvent.java`, `OrderCreatedEvent.java`, `OrderStatusChangedEvent.java`, `OrderEventListener.java`
+
+**Why it matters:** Adding a new side-effect (e.g., sending a webhook) means adding a new `@EventListener` method — zero changes to `OrderService`. This is the Open/Closed Principle in action.
+
+#### 2. State Pattern (Order Status Machine)
+
+**Problem:** Order status transitions must be strictly controlled. Scattering if/else checks across the service creates fragile, hard-to-test code.
+
+**Solution:** `OrderStatus` enum encapsulates all transition rules in `canTransitionTo()`. Each status "knows" which transitions it allows — the service just asks.
+
+```java
+// The service doesn't contain transition logic — it delegates:
+if (!currentStatus.canTransitionTo(targetStatus)) {
+    throw new InvalidOrderStateException(...);
+}
+```
+
+**File:** `OrderStatus.java`
+
+**Why it matters:** 18 parameterized tests validate every possible transition pair. Adding a new status (e.g., `RETURNED`) means updating one enum — no service code changes.
+
+#### 3. Strategy Pattern (Pluggable Validation)
+
+**Problem:** Order validation rules change over time (max items, max amount, fraud checks, inventory checks). Hardcoding them in the service makes adding/removing rules a risky change.
+
+**Solution:** `OrderValidationStrategy` interface with Spring-injected implementations. The service iterates all registered strategies — each one is an independent `@Component`.
+
+```
+OrderService ──iterates──→ MaxItemsPerOrderValidator (≤ 50 items)
+                        ──→ MaxOrderAmountValidator (≤ $100,000)
+                        ──→ (future: FraudCheckValidator, InventoryValidator...)
+```
+
+**Files:** `OrderValidationStrategy.java`, `MaxItemsPerOrderValidator.java`, `MaxOrderAmountValidator.java`
+
+**Why it matters:** New validation rule = new class + `@Component`. No existing code changes. No risk of breaking existing rules.
+
+### Structural Patterns
+
+#### 4. Facade Pattern (OrderService)
+
+**Problem:** Clients (controller) shouldn't know about repositories, event publishers, validators, mappers.
+
+**Solution:** `OrderService` acts as a Facade — it hides the complexity of 4 collaborators behind 6 clean public methods.
+
+```
+OrderController ──→ OrderService (Facade)
+                        ├── OrderRepository (persistence)
+                        ├── ApplicationEventPublisher (events)
+                        ├── List<OrderValidationStrategy> (validation)
+                        └── OrderMapper (DTO conversion)
+```
+
+#### 5. DTO Pattern (Data Transfer Objects)
+
+**Problem:** Exposing JPA entities directly couples the API contract to the database schema.
+
+**Solution:** Separate request/response DTOs with a stateless `OrderMapper` converter. Schema changes don't break clients; API changes don't require entity modifications.
+
+```
+HTTP Request → CreateOrderRequest (DTO) → OrderMapper → Order (Entity) → DB
+DB → Order (Entity) → OrderMapper → OrderResponse (DTO) → HTTP Response
+```
+
+#### 6. Repository Pattern (Data Access Abstraction)
+
+**Problem:** Business logic shouldn't contain SQL or know about persistence mechanics.
+
+**Solution:** `OrderRepository` (Spring Data JPA) provides a clean interface. Custom JPQL queries (`findByIdWithItems`, `bulkUpdatePendingToProcessing`) are declared, not implemented.
+
+### Creational Patterns
+
+#### 7. Builder Pattern (Object Construction)
+
+**Problem:** Entities and DTOs have many fields. Constructors with 7+ arguments are error-prone.
+
+**Solution:** Lombok `@Builder` on all entities and DTOs. Enables readable, immutable construction:
+
+```java
+Order.builder()
+    .customerName("Alice")
+    .customerEmail("alice@example.com")
+    .status(OrderStatus.PENDING)
+    .build();
+```
+
+#### 8. Factory Method (OrderMapper)
+
+**Problem:** Converting between DTOs and entities involves multiple steps (mapping fields, building child objects, computing totals).
+
+**Solution:** `OrderMapper.toEntity()` and `OrderMapper.toResponse()` are static factory methods that encapsulate construction logic. The service doesn't know *how* to build entities — it delegates.
+
+### Bonus: Event Sourcing Lite (Audit Trail)
+
+**Problem:** "Who changed order #123 and when?" — without an audit trail, this question is unanswerable.
+
+**Solution:** `OrderAuditLog` entity captures every lifecycle event (creation, status changes, cancellation) with timestamps, old/new status, and a detail message. Queryable via `GET /api/orders/{id}/audit`.
+
+```
+GET /api/orders/1/audit
+[
+  { "eventType": "ORDER_CREATED",  "newStatus": "PENDING",    "detail": "Order placed with 2 item(s)" },
+  { "eventType": "STATUS_CHANGED", "oldStatus": "PENDING",    "newStatus": "PROCESSING", "detail": "..." },
+  { "eventType": "STATUS_CHANGED", "oldStatus": "PROCESSING", "newStatus": "SHIPPED",    "detail": "..." }
+]
+```
+
+This isn't full event sourcing (we don't replay events to rebuild state), but it provides complete traceability — a critical requirement for any real e-commerce system.
+
+### Pattern Summary
+
+| Pattern | Category | Where Applied | Problem Solved |
+|---|---|---|---|
+| **Observer** | Behavioral | Domain Events + EventListener | Decoupled side-effects from business logic |
+| **State** | Behavioral | OrderStatus enum | Centralized, testable transition rules |
+| **Strategy** | Behavioral | OrderValidationStrategy | Pluggable, extensible validation rules |
+| **Facade** | Structural | OrderService | Hides complexity behind clean API |
+| **DTO** | Structural | Request/Response DTOs + Mapper | Decoupled API contract from DB schema |
+| **Repository** | Structural | OrderRepository (JPA) | Abstracted data access from business logic |
+| **Builder** | Creational | Lombok @Builder on all models | Readable, safe multi-field construction |
+| **Factory Method** | Creational | OrderMapper static methods | Encapsulated entity/DTO construction |
+| **Event Sourcing Lite** | Architectural | OrderAuditLog | Full order lifecycle traceability |
 
 ---
 

@@ -1,13 +1,17 @@
 package com.ecommerce.order.service;
 
 import com.ecommerce.order.dto.*;
+import com.ecommerce.order.event.OrderCreatedEvent;
+import com.ecommerce.order.event.OrderStatusChangedEvent;
 import com.ecommerce.order.exception.InvalidOrderStateException;
 import com.ecommerce.order.exception.OrderNotFoundException;
 import com.ecommerce.order.model.Order;
 import com.ecommerce.order.model.OrderStatus;
 import com.ecommerce.order.repository.OrderRepository;
+import com.ecommerce.order.validation.OrderValidationStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,16 +24,31 @@ public class OrderService {
     private static final Logger log = LoggerFactory.getLogger(OrderService.class);
 
     private final OrderRepository orderRepository;
+    private final ApplicationEventPublisher eventPublisher;
+    private final List<OrderValidationStrategy> validationStrategies;
 
-    public OrderService(OrderRepository orderRepository) {
+    public OrderService(OrderRepository orderRepository,
+                        ApplicationEventPublisher eventPublisher,
+                        List<OrderValidationStrategy> validationStrategies) {
         this.orderRepository = orderRepository;
+        this.eventPublisher = eventPublisher;
+        this.validationStrategies = validationStrategies;
     }
 
     @Transactional
     public OrderResponse createOrder(CreateOrderRequest request) {
+        for (OrderValidationStrategy strategy : validationStrategies) {
+            strategy.validate(request);
+        }
+
         Order order = OrderMapper.toEntity(request);
         Order saved = orderRepository.save(order);
         log.info("Created order id={} for customer={}", saved.getId(), saved.getCustomerEmail());
+
+        eventPublisher.publishEvent(new OrderCreatedEvent(
+                this, saved.getId(), saved.getCustomerEmail(),
+                saved.getItems().size(), saved.getTotalAmount()));
+
         return OrderMapper.toResponse(saved);
     }
 
@@ -67,6 +86,11 @@ public class OrderService {
         order.setStatus(targetStatus);
         Order updated = orderRepository.save(order);
         log.info("Order id={} status changed {} -> {}", id, currentStatus, targetStatus);
+
+        eventPublisher.publishEvent(new OrderStatusChangedEvent(
+                this, id, currentStatus, targetStatus,
+                String.format("Status updated from %s to %s", currentStatus, targetStatus)));
+
         return OrderMapper.toResponse(updated);
     }
 
@@ -80,9 +104,15 @@ public class OrderService {
                             id, order.getStatus()));
         }
 
+        OrderStatus previousStatus = order.getStatus();
         order.setStatus(OrderStatus.CANCELLED);
         Order cancelled = orderRepository.save(order);
         log.info("Order id={} cancelled", id);
+
+        eventPublisher.publishEvent(new OrderStatusChangedEvent(
+                this, id, previousStatus, OrderStatus.CANCELLED,
+                "Order cancelled by customer"));
+
         return OrderMapper.toResponse(cancelled);
     }
 
