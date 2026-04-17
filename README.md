@@ -23,6 +23,8 @@ Built as a coding assessment submission — designed to demonstrate clean archit
 - [Caching](#caching)
 - [Logging](#logging)
 - [Kafka Integration](#kafka-integration)
+- [CI/CD Pipeline](#cicd-pipeline)
+- [Docker & Deployment](#docker--deployment)
 - [Design Decisions & Trade-offs](#design-decisions--trade-offs)
 - [AI-Assisted Development: What Worked, What Broke, How I Fixed It](#ai-assisted-development-what-worked-what-broke-how-i-fixed-it)
 - [Human Judgment: What Only a Developer Could Do](#human-judgment-what-only-a-developer-could-do)
@@ -792,6 +794,95 @@ OrderService ──publishes──→ Spring ApplicationEvent
   "reason": "Status updated from PENDING to PROCESSING",
   "occurredAt": "2026-04-17T10:15:45.456"
 }
+```
+
+---
+
+## CI/CD Pipeline
+
+### GitHub Actions — 3-Stage Pipeline
+
+Every push to `main` or PR triggers an automated pipeline:
+
+```
+┌─────────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Build & Test      │───→│  Code Quality    │───→│  Docker Build   │
+│  (Java 8 + Java 11) │    │  (mvn verify)    │    │  (main only)    │
+└─────────────────────┘    └──────────────────┘    └─────────────────┘
+```
+
+**Stage 1: Build & Test** (matrix — runs on Java 8 AND Java 11 in parallel)
+- `mvn clean compile` — compile all 34+ source files
+- `mvn test` — run all 64+ unit and integration tests
+- `mvn package` — produce executable JAR
+- Uploads test results and JAR as artifacts
+
+**Stage 2: Code Quality**
+- `mvn verify` — full lifecycle including integration test verification
+- Runs after build succeeds on both Java versions
+
+**Stage 3: Docker Build** (main branch only)
+- Packages JAR into a multi-stage Docker image
+- Tags with commit SHA + `latest`
+- **Smoke test:** Starts the container, waits 15 seconds, hits `/actuator/health`
+
+### Key CI/CD Decisions
+- **Matrix testing on Java 8 + 11** — proves forward compatibility
+- **Artifact uploads** — test reports downloadable for debugging failed builds
+- **Docker smoke test** — catches "builds but doesn't start" issues
+- **Conditional Docker stage** — only runs on `main` (not on every PR)
+
+---
+
+## Docker & Deployment
+
+### Quick Start (Docker)
+
+```bash
+# Standalone (no Kafka):
+docker-compose up --build
+
+# Full stack with Kafka:
+docker-compose -f docker-compose.yml -f docker-compose.kafka.yml up --build
+```
+
+### Multi-Stage Dockerfile
+
+```
+Stage 1: maven:3.8.8-eclipse-temurin-8   → Build + package
+Stage 2: eclipse-temurin:8-jre-alpine    → Runtime only (~85MB)
+```
+
+**Production hardening baked in:**
+- **Non-root user** — runs as `appuser` (security best practice)
+- **Container-aware JVM** — `UseContainerSupport` + `MaxRAMPercentage=75%`
+- **Health check** — Docker HEALTHCHECK hits `/actuator/health` every 30s
+- **Layer caching** — `dependency:go-offline` first, source code second (fast rebuilds)
+
+### Docker Compose Profiles
+
+| Command | What You Get |
+|---|---|
+| `docker-compose up` | App + H2 (in-memory) — zero dependencies |
+| `docker-compose -f docker-compose.yml -f docker-compose.kafka.yml up` | App + Kafka + Zookeeper — full event streaming |
+
+### Kubernetes-Ready Signals
+
+The application exposes everything K8s needs:
+
+```yaml
+# Liveness probe:
+httpGet:
+  path: /actuator/health
+  port: 8080
+
+# Readiness probe:
+httpGet:
+  path: /actuator/health
+  port: 8080
+
+# Graceful shutdown:
+terminationGracePeriodSeconds: 30
 ```
 
 ---

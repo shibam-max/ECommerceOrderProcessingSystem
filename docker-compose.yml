@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  # =============================================
+  # Order Processing API (standalone — no Kafka)
+  # =============================================
+  app:
+    build: .
+    container_name: order-processing-api
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=default
+      - JAVA_OPTS=-Xms256m -Xmx512m
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
