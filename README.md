@@ -20,6 +20,7 @@ Built as a coding assessment submission — designed to demonstrate clean archit
 - [Project Structure](#project-structure)
 - [Design Decisions & Trade-offs](#design-decisions--trade-offs)
 - [AI-Assisted Development: What Worked, What Broke, How I Fixed It](#ai-assisted-development-what-worked-what-broke-how-i-fixed-it)
+- [Human Judgment: What Only a Developer Could Do](#human-judgment-what-only-a-developer-could-do)
 
 ---
 
@@ -381,7 +382,7 @@ src/
 |---|---|
 | **State machine in the enum** | `OrderStatus.canTransitionTo()` centralizes all transition logic in one place. Easy to test (18 parameterized cases), impossible to bypass from the service layer. Alternative: a separate state machine library — overkill for 5 states. |
 | **Separate DTOs from entities** | JPA entities are internal; API contracts are external. Decoupling them means we can evolve the DB schema without breaking clients, and vice versa. |
-| **Schema-first DDL with `ddl-auto=validate`** | In production, you never let Hibernate auto-generate DDL. `schema.sql` owns the schema; Hibernate validates the mapping matches. This mirrors real-world deployment (Flyway/Liquibase). |
+| **Schema-first DDL with `ddl-auto=none`** | Hibernate does not own the schema. `schema.sql` creates tables before Hibernate boots. This mirrors real-world deployment (Flyway/Liquibase) and avoids boot-order conflicts between SQL init and Hibernate validation. |
 | **Bulk SQL for the scheduler** | `bulkUpdatePendingToProcessing()` is a single `UPDATE ... WHERE` — O(1) round-trips regardless of row count. Loading N entities, mutating, and saving would be O(N) with N+1 risk. |
 | **Constructor injection (no `@Autowired` on fields)** | Makes dependencies explicit, supports immutability, and makes unit testing trivial (just pass mocks to the constructor). |
 | **`findByIdWithItems` (JOIN FETCH)** | Avoids the N+1 problem: one query loads the order + all items. Without this, accessing `order.getItems()` outside a transaction triggers `LazyInitializationException`. |
@@ -455,9 +456,19 @@ src/
 
 **How it was fixed:**
 - Created `src/test/resources/application.yml` that overrides `data-locations` to blank, disabling seed data during tests
-- Added `defer-datasource-initialization: true` to the main config to ensure correct schema.sql → Hibernate validate → data.sql ordering
+- Initially added `defer-datasource-initialization: true` — but that caused Issue #6 below
 
 **Lesson:** AI doesn't reason about test execution order or how multiple Spring contexts interact with a shared in-memory database. A human had to trace the FK violation back to a stale auto-increment sequence from a prior test context.
+
+#### 6. Startup Crash: `defer-datasource-initialization` vs `ddl-auto=validate`
+
+**What AI did wrong:** To fix Issue #5, AI added `defer-datasource-initialization: true` to `application.yml`. This flag delays all SQL scripts (`schema.sql` and `data.sql`) to run *after* Hibernate initialization.
+
+**What happened:** With `ddl-auto=validate`, Hibernate tries to validate tables at startup — but `schema.sql` hadn't run yet because it was deferred. Result: `Schema-validation: missing table [customer_order]` crash on every startup.
+
+**How it was fixed:** A human realized that the AI's fix for one problem created another. The correct solution was to switch `ddl-auto` from `validate` to `none` and remove `defer-datasource-initialization` entirely. With `ddl-auto=none`, Spring runs `schema.sql` → `data.sql` first, and Hibernate simply trusts the schema without trying to validate or auto-create it.
+
+**Lesson:** AI applied a fix in isolation without understanding the cascade effect. It didn't connect that deferring SQL scripts would starve Hibernate's validator. A human had to read the full stack trace, understand the Spring Boot initialization sequence, and pick a configuration that satisfies both runtime startup and test isolation simultaneously.
 
 ### Summary: AI + Human Collaboration
 
@@ -469,11 +480,75 @@ src/
 | Swagger dependency | Wrong version (1.8.0) | Identified runtime failure, downgraded |
 | OS-specific commands | Wrong (assumed Unix) | Fixed for Windows/PowerShell |
 | Seed data + test isolation | Broke test suite with FK errors | Traced multi-context H2 conflict, fixed |
+| Fix cascading into new bug | `defer-datasource-initialization` broke startup | Understood boot sequence, chose `ddl-auto=none` |
 | Test design | Generated all 59 tests | Verified assertions match requirements |
 | State machine logic | Correct first try | Validated with parameterized tests |
 | README / documentation | First draft | Rewrote for accuracy, added this section |
 
 **Bottom line:** AI accelerated development dramatically (what would take a full day was done in ~1 hour), but it made **environment-specific assumptions** that required human expertise to diagnose and fix. The code compiles, tests pass, and every endpoint works because a human verified every layer — not because AI got it right the first time.
+
+---
+
+## Human Judgment: What Only a Developer Could Do
+
+> *This section is for the judges. AI is a powerful accelerator, but here are the specific moments in this project where no AI could have solved the problem — only a developer with real engineering understanding could.*
+
+### 1. Diagnosing the Root Cause, Not Just the Symptom
+
+When the application crashed with `invalid flag: --release`, AI had no idea why. It had generated valid Java 17 code — the code was *correct* in a vacuum. A human had to:
+- Run `java -version` to discover the environment was Java 8
+- Understand that Spring Boot 3.x requires Java 17 at the bytecode level
+- Decide to downgrade Spring Boot (not install Java 17) because the target deployment environment matters more than the latest framework
+- Systematically find and replace `jakarta.*` → `javax.*`, switch expressions → switch statements, and `List.of()` → `Arrays.asList()` across 18 source files and 6 test files
+
+AI would have happily regenerated the project for Java 17 — but the *constraint* was Java 8, and only a human could make that judgment call.
+
+### 2. Understanding Spring Boot Initialization Order
+
+The most subtle bug was Issue #6: AI's fix for seed data (`defer-datasource-initialization: true`) silently broke application startup by reordering Spring's initialization sequence. This required understanding that:
+
+1. By default, Spring Boot runs SQL scripts **before** Hibernate
+2. `defer-datasource-initialization: true` flips this order
+3. `ddl-auto=validate` depends on tables existing **when Hibernate boots**
+4. These three facts combine to cause a startup crash
+
+No stack trace told you "you set `defer-datasource-initialization` wrong." The error was `missing table [customer_order]` — and only a human who understands the Spring Boot boot sequence could connect that to the config flag added 10 minutes ago. AI would have likely tried adding the table via `ddl-auto=create`, which would have hidden the problem and lost the explicit schema control.
+
+### 3. Choosing the Right Abstraction Level
+
+Throughout this project, there were moments where AI suggested "correct" code that was wrong for the context:
+
+| AI Suggestion | Human Decision | Why |
+|---|---|---|
+| Use a state machine library (Spring Statemachine) | Keep it in the enum | 5 states don't need a framework — a `canTransitionTo()` method is more readable, testable, and has zero dependencies |
+| Use `ddl-auto=update` to avoid schema issues | Use `ddl-auto=none` with explicit `schema.sql` | Production systems never let Hibernate mutate the schema. Explicit DDL is safer, auditable, and mirrors real CI/CD pipelines |
+| Load all orders, filter in Java | Use repository-level `findByStatus()` | Filtering in the database is O(matching rows), not O(all rows). This matters at scale |
+| Use `findById()` + lazy loading | Use `findByIdWithItems()` JOIN FETCH | Avoids `LazyInitializationException` outside transactions and eliminates N+1 queries |
+
+These aren't bugs — they're **judgment calls** that AI cannot make because it lacks context about production constraints, performance implications, and long-term maintainability.
+
+### 4. Verifying That "Working" Means Actually Working
+
+AI generated 59 tests and they all passed. But "tests pass" is not the same as "the application works." A human had to:
+
+- Start the server and manually hit every endpoint with real HTTP requests
+- Verify that Swagger UI actually rendered (not just that the dependency was present)
+- Check that seed data appeared in the API response (not just that `data.sql` was on the classpath)
+- Test error cases live — send malformed JSON, try invalid status transitions, cancel a non-PENDING order
+- Confirm the H2 console was accessible for reviewers
+
+AI can write tests. A human decides whether the tests are *testing the right things*.
+
+### 5. Writing This README
+
+AI produced a generic project README. A human:
+- Restructured it for a reviewer audience (not a user audience)
+- Added the architecture diagram and lifecycle flowchart
+- Wrote the honest AI-reflection section (AI won't self-critique)
+- Documented the 6 real bugs and how they were fixed
+- Explained *why* each design decision was made, not just *what* was done
+
+**The takeaway for judges:** This project was built *with* AI, not *by* AI. Every file was human-reviewed. Every bug was human-diagnosed. Every design trade-off was human-decided. AI wrote the first draft — a human made it production-ready.
 
 ---
 
