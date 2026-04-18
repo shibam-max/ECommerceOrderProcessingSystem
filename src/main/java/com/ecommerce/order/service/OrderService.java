@@ -13,7 +13,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
-import org.springframework.cache.annotation.Caching;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -41,7 +40,7 @@ public class OrderService {
     }
 
     @Transactional
-    @CacheEvict(value = "orderList", allEntries = true)
+    @CacheEvict(value = "orders", allEntries = true)
     public OrderResponse createOrder(CreateOrderRequest request) {
         for (OrderValidationStrategy strategy : validationStrategies) {
             strategy.validate(request);
@@ -67,7 +66,6 @@ public class OrderService {
     }
 
     @Transactional(readOnly = true)
-    @Cacheable(value = "orderList", key = "#status?.name() ?: 'ALL'")
     public List<OrderResponse> listOrders(OrderStatus status) {
         List<Order> orders = (status != null)
                 ? orderRepository.findByStatus(status)
@@ -89,10 +87,7 @@ public class OrderService {
     }
 
     @Transactional
-    @Caching(evict = {
-            @CacheEvict(value = "orders", key = "#id"),
-            @CacheEvict(value = "orderList", allEntries = true)
-    })
+    @CacheEvict(value = "orders", key = "#id")
     public OrderResponse updateOrderStatus(Long id, UpdateStatusRequest request) {
         Order order = findOrderOrThrow(id);
         OrderStatus currentStatus = order.getStatus();
@@ -116,10 +111,7 @@ public class OrderService {
     }
 
     @Transactional
-    @Caching(evict = {
-            @CacheEvict(value = "orders", key = "#id"),
-            @CacheEvict(value = "orderList", allEntries = true)
-    })
+    @CacheEvict(value = "orders", key = "#id")
     public OrderResponse cancelOrder(Long id) {
         Order order = findOrderOrThrow(id);
 
@@ -142,10 +134,7 @@ public class OrderService {
     }
 
     @Transactional
-    @Caching(evict = {
-            @CacheEvict(value = "orders", allEntries = true),
-            @CacheEvict(value = "orderList", allEntries = true)
-    })
+    @CacheEvict(value = "orders", allEntries = true)
     public int promotePendingOrders() {
         int count = orderRepository.bulkUpdatePendingToProcessing();
         if (count > 0) {

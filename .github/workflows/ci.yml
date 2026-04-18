@@ -84,14 +84,27 @@ jobs:
       - name: Tag as latest
         run: docker tag order-processing-system:${{ github.sha }} order-processing-system:latest
 
-      - name: Smoke test — start container and verify health
+      - name: Smoke test — start container and verify health + auth
         run: |
           docker run -d --name test-app -p 8080:8080 order-processing-system:latest
           echo "Waiting for application startup..."
-          sleep 20
-          echo "Checking health endpoint..."
+          sleep 25
+          echo "=== Health check ==="
           curl -f http://localhost:8080/actuator/health || (docker logs test-app && exit 1)
-          echo "Health check passed. Verifying API..."
-          curl -f http://localhost:8080/api/orders || (docker logs test-app && exit 1)
+          echo ""
+          echo "=== Swagger UI accessible ==="
+          curl -sf -o /dev/null -w "%{http_code}" http://localhost:8080/swagger-ui/index.html | grep -q 200
+          echo "Swagger OK"
+          echo "=== Login to get JWT token ==="
+          TOKEN=$(curl -sf -X POST http://localhost:8080/api/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"admin","password":"admin123"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+          echo "Token obtained: ${TOKEN:0:20}..."
+          echo "=== Authenticated API test ==="
+          curl -f -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/orders || (docker logs test-app && exit 1)
+          echo ""
+          echo "=== Unauthenticated request returns 401 ==="
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:8080/api/orders)
+          [ "$STATUS" = "401" ] && echo "401 confirmed (security working)" || (echo "Expected 401, got $STATUS" && exit 1)
           echo "All smoke tests passed."
           docker stop test-app

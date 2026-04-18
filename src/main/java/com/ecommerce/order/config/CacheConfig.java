@@ -14,13 +14,12 @@ import java.util.concurrent.TimeUnit;
  *
  * Strategy:
  *   - "orders" cache: individual order lookups (getOrder by ID)
- *     TTL 10 minutes, max 500 entries. Evicted on any write operation.
- *   - "orderList" cache: list queries (all orders, filtered by status)
- *     TTL 2 minutes, max 50 entries. Short TTL because list results change frequently.
+ *     TTL 10 minutes, max 500 entries. Evicted on write operations.
  *
- * Trade-off: We use a short TTL + explicit eviction rather than write-through
- * because order mutations are frequent in an e-commerce system. Stale reads
- * for a few seconds are acceptable; stale reads for minutes are not.
+ * Trade-off: We intentionally do NOT cache list/paginated queries because
+ * the combinatorial explosion of page/size/sort/filter params makes cache
+ * keys impractical and stale-prone. Single-entity caching gives 80% of the
+ * benefit with none of the invalidation complexity.
  */
 @Configuration
 @EnableCaching

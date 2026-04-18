@@ -53,6 +53,12 @@ public class IdempotencyFilter implements Filter {
             return;
         }
 
+        String path = httpReq.getRequestURI();
+        if (path.startsWith("/api/auth/")) {
+            chain.doFilter(request, response);
+            return;
+        }
+
         String idempotencyKey = httpReq.getHeader(IDEMPOTENCY_KEY_HEADER);
         if (idempotencyKey == null || idempotencyKey.trim().isEmpty()) {
             chain.doFilter(request, response);

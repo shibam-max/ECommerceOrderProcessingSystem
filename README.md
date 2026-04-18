@@ -91,7 +91,7 @@ Built as a coding assessment submission — designed to demonstrate clean archit
 │  Database (H2 In-Memory)                                     │
 │  - Schema: schema.sql (DDL managed explicitly)               │
 │  - Seed data: data.sql (4 sample orders)                     │
-│  - Hibernate ddl-auto=validate (safety net)                  │
+│  - Hibernate ddl-auto=none (explicit schema control)         │
 └──────────────────────────────────────────────────────────────┘
 
          ┌──────────────────────────────────┐
@@ -133,7 +133,7 @@ The server starts on **http://localhost:8080**.
 | URL | What |
 |---|---|
 | http://localhost:8080/swagger-ui/index.html | Interactive Swagger UI |
-| http://localhost:8080/v3/api-docs | OpenAPI 3.0 JSON spec |
+| http://localhost:8080/api-docs | OpenAPI 3.0 JSON spec |
 | http://localhost:8080/h2-console | H2 database console |
 | http://localhost:8080/api/orders | List all orders |
 
@@ -318,19 +318,19 @@ All errors return a consistent JSON structure via `@RestControllerAdvice`:
 ## Testing
 
 ```bash
-mvn test              # Run all 72 tests
+mvn test              # Run all 73 tests
 mvn verify            # Build + test
 mvn test -pl .        # Run from project root
 ```
 
-### Test Suite Summary (72 tests, 100% pass)
+### Test Suite Summary (73 tests, 100% pass)
 
 | Test Class | Type | Count | What It Validates |
 |---|---|---|---|
 | `OrderStatusTest` | Unit (Parameterized) | 19 | Every one of the 18 status-transition pairs + terminal state check |
 | `OrderServiceTest` | Unit (Mockito) | 15 | Service logic: create, get, list, update, cancel, promote, error paths |
 | `OrderRepositoryTest` | Integration (DataJpaTest) | 5 | JPA queries, JOIN FETCH, bulk JPQL update, empty results |
-| `OrderControllerIntegrationTest` | Integration (MockMvc) | 19 | Full HTTP cycle: happy paths, validation errors, 404, 409, malformed JSON |
+| `OrderControllerIntegrationTest` | Integration (MockMvc) | 20 | Full HTTP cycle: happy paths, pagination, validation errors, 404, 409, malformed JSON |
 | `OrderAuditIntegrationTest` | Integration (MockMvc) | 3 | Audit trail: creation log, full lifecycle audit, cancellation audit |
 | `OrderEventListenerTest` | Unit (Mockito) | 2 | Event listener writes audit records correctly |
 | `AuthControllerTest` | Integration (MockMvc) | 8 | JWT auth: register, login, duplicate username, bad credentials, token access, RBAC |
@@ -1194,7 +1194,7 @@ Every push to `main` or PR triggers an automated pipeline:
 
 **Stage 1: Build & Test** (matrix — runs on Java 8 AND Java 11 in parallel)
 - `mvn clean compile` — compile all 34+ source files
-- `mvn test` — run all 64+ unit and integration tests
+- `mvn test` — run all 73 unit and integration tests
 - `mvn package` — produce executable JAR
 - Uploads test results and JAR as artifacts
 
