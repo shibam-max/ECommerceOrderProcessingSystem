@@ -30,6 +30,14 @@ CREATE TABLE IF NOT EXISTS order_audit_log (
         REFERENCES customer_order (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS app_user (
+    id       BIGINT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50)  NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    role     VARCHAR(20)  NOT NULL DEFAULT 'CUSTOMER',
+    enabled  BOOLEAN      NOT NULL DEFAULT TRUE
+);
+
 CREATE INDEX IF NOT EXISTS idx_order_status ON customer_order (status);
 CREATE INDEX IF NOT EXISTS idx_order_customer_email ON customer_order (customer_email);
 CREATE INDEX IF NOT EXISTS idx_audit_order_id ON order_audit_log (order_id);

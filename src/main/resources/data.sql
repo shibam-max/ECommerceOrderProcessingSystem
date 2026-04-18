@@ -1,4 +1,6 @@
 -- Seed data: pre-populate a few sample orders so the API has data on startup.
+-- Note: Users (admin/customer) are seeded by DataInitializer at runtime
+-- using the PasswordEncoder bean, which guarantees correct BCrypt hashes.
 -- Useful for demos, Swagger UI testing, and reviewer walkthroughs.
 
 INSERT INTO customer_order (customer_name, customer_email, status, total_amount, created_at, updated_at)

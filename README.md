@@ -18,6 +18,7 @@ Built as a coding assessment submission — designed to demonstrate clean archit
 - [Validation & Error Handling](#validation--error-handling)
 - [Testing](#testing)
 - [Project Structure](#project-structure)
+- [Security (JWT Authentication & Authorization)](#security-jwt-authentication--authorization)
 - [System Design Patterns](#system-design-patterns)
 - [Distributed System Fundamentals](#distributed-system-fundamentals)
 - [Caching](#caching)
@@ -55,6 +56,7 @@ Built as a coding assessment submission — designed to demonstrate clean archit
 | Validation | Jakarta Bean Validation (Hibernate Validator) | Declarative field-level constraints with cascading |
 | API Docs | SpringDoc OpenAPI 1.7 (Swagger UI) | Auto-generated interactive API explorer |
 | Build | Maven 3.8+ | Standard, reproducible builds |
+| Security | Spring Security + JWT (jjwt 0.11.5) | Stateless auth, role-based access control |
 | Testing | JUnit 5 + Mockito + MockMvc + AssertJ | Unit tests, integration tests, parameterized tests |
 | Logging | SLF4J + Logback | Structured console + rolling file output |
 
@@ -313,12 +315,12 @@ All errors return a consistent JSON structure via `@RestControllerAdvice`:
 ## Testing
 
 ```bash
-mvn test              # Run all 59 tests
+mvn test              # Run all 72 tests
 mvn verify            # Build + test
 mvn test -pl .        # Run from project root
 ```
 
-### Test Suite Summary (59 tests, 100% pass)
+### Test Suite Summary (72 tests, 100% pass)
 
 | Test Class | Type | Count | What It Validates |
 |---|---|---|---|
@@ -326,6 +328,9 @@ mvn test -pl .        # Run from project root
 | `OrderServiceTest` | Unit (Mockito) | 15 | Service logic: create, get, list, update, cancel, promote, error paths |
 | `OrderRepositoryTest` | Integration (DataJpaTest) | 5 | JPA queries, JOIN FETCH, bulk JPQL update, empty results |
 | `OrderControllerIntegrationTest` | Integration (MockMvc) | 19 | Full HTTP cycle: happy paths, validation errors, 404, 409, malformed JSON |
+| `OrderAuditIntegrationTest` | Integration (MockMvc) | 3 | Audit trail: creation log, full lifecycle audit, cancellation audit |
+| `OrderEventListenerTest` | Unit (Mockito) | 2 | Event listener writes audit records correctly |
+| `AuthControllerTest` | Integration (MockMvc) | 8 | JWT auth: register, login, duplicate username, bad credentials, token access, RBAC |
 | `OrderStatusSchedulerTest` | Unit (Mockito) | 1 | Scheduler delegates correctly to service |
 
 ### Test Design Philosophy
@@ -365,6 +370,17 @@ src/
 │   │   └── OrderRepository.java           # JpaRepository + 2 custom JPQL queries
 │   ├── scheduler/
 │   │   └── OrderStatusScheduler.java      # Cron job: PENDING → PROCESSING
+│   ├── security/
+│   │   ├── AppUser.java                   # JPA entity for users
+│   │   ├── AppUserRepository.java         # User data access
+│   │   ├── AuthController.java            # Login + Register endpoints
+│   │   ├── AuthRequest.java               # Login/Register DTO
+│   │   ├── AuthResponse.java              # Token response DTO
+│   │   ├── CustomUserDetailsService.java  # Spring Security UserDetailsService
+│   │   ├── DataInitializer.java           # Seeds default users on startup
+│   │   ├── JwtAuthenticationFilter.java   # Bearer token filter
+│   │   ├── JwtTokenProvider.java          # JWT generation + validation
+│   │   └── SecurityConfig.java            # Filter chain + RBAC rules
 │   └── service/
 │       └── OrderService.java              # All business logic, transactional
 ├── main/resources/
@@ -378,8 +394,99 @@ src/
     ├── model/OrderStatusTest.java
     ├── repository/OrderRepositoryTest.java
     ├── scheduler/OrderStatusSchedulerTest.java
+    ├── security/AuthControllerTest.java
     └── service/OrderServiceTest.java
 ```
+
+---
+
+## Security (JWT Authentication & Authorization)
+
+### Architecture
+
+The application uses **stateless JWT authentication** with **role-based access control (RBAC)**. No server-side sessions — every request carries its own authentication in the `Authorization` header.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Client sends POST /api/auth/login with {username, password}             │
+│  Server validates credentials, returns JWT token                         │
+│  Client includes "Authorization: Bearer <token>" on all subsequent calls │
+└──────────────────────────────────────────────────────────────────────────┘
+
+Request Flow:
+  Client → CorrelationIdFilter → RateLimitingFilter → IdempotencyFilter
+         → JwtAuthenticationFilter (validates token, sets SecurityContext)
+         → SecurityFilterChain (checks role permissions)
+         → Controller → Service → Repository
+```
+
+### Role-Based Access Control
+
+| Endpoint | CUSTOMER | ADMIN | Public |
+|---|---|---|---|
+| `POST /api/auth/register` | - | - | Yes |
+| `POST /api/auth/login` | - | - | Yes |
+| `POST /api/orders` | Yes | Yes | - |
+| `GET /api/orders`, `GET /api/orders/{id}` | Yes | Yes | - |
+| `POST /api/orders/{id}/cancel` | Yes | Yes | - |
+| `PATCH /api/orders/{id}/status` | - | Yes | - |
+| `GET /api/orders/{id}/audit` | - | Yes | - |
+| Swagger UI, Actuator, H2 Console | - | - | Yes |
+
+### Test Credentials (seeded on startup)
+
+| Username | Password | Role | What They Can Do |
+|---|---|---|---|
+| `admin` | `admin123` | ADMIN | All operations including status updates and audit trail |
+| `customer` | `customer123` | CUSTOMER | Create, view, list, and cancel orders |
+
+### How to Test with JWT
+
+**Step 1: Login to get a token**
+```bash
+# PowerShell:
+$response = Invoke-RestMethod -Uri "http://localhost:8080/api/auth/login" -Method POST -ContentType "application/json" -Body '{"username":"admin","password":"admin123"}'
+$token = $response.token
+```
+
+**Step 2: Use the token on protected endpoints**
+```bash
+Invoke-RestMethod -Uri "http://localhost:8080/api/orders" -Method GET -Headers @{Authorization = "Bearer $token"}
+```
+
+**Step 3: Swagger UI (browser)**
+1. Open http://localhost:8080/swagger-ui/index.html
+2. Call `POST /api/auth/login` with admin credentials
+3. Copy the `token` from the response
+4. Click the **Authorize** button (top-right lock icon)
+5. Enter: `Bearer <paste-token-here>`
+6. All subsequent Swagger calls include the token automatically
+
+### Security Components
+
+| Component | File | Purpose |
+|---|---|---|
+| `AppUser` | `security/AppUser.java` | JPA entity for users (id, username, BCrypt password, role, enabled) |
+| `AppUserRepository` | `security/AppUserRepository.java` | Spring Data JPA repo with `findByUsername` |
+| `CustomUserDetailsService` | `security/CustomUserDetailsService.java` | Loads users from DB for Spring Security |
+| `JwtTokenProvider` | `security/JwtTokenProvider.java` | Generates and validates JWT tokens (HS256) |
+| `JwtAuthenticationFilter` | `security/JwtAuthenticationFilter.java` | `OncePerRequestFilter` — extracts and validates Bearer tokens |
+| `SecurityConfig` | `security/SecurityConfig.java` | Filter chain, endpoint permissions, CORS, CSRF disabled |
+| `AuthController` | `security/AuthController.java` | `POST /api/auth/register` and `POST /api/auth/login` |
+| `DataInitializer` | `security/DataInitializer.java` | Seeds admin/customer users at startup with BCrypt-hashed passwords |
+
+### Key Security Design Decisions
+
+| Decision | Rationale |
+|---|---|
+| **Stateless JWT** (no sessions) | Scales horizontally — any instance can validate any request. No shared session store needed. |
+| **BCrypt password hashing** | Industry standard with adaptive cost factor. Passwords never stored in plaintext. |
+| **CSRF disabled** | Correct for stateless REST APIs — tokens are in headers, not cookies. |
+| **CORS open for development** | `allowedOriginPatterns: *` for demo. Production would lock to specific origins via env config. |
+| **Swagger UI stays public** | Reviewers can test instantly. Auth is done via the Authorize button, not locked behind a login page. |
+| **Actuator stays public** | Health checks must work without auth (K8s liveness/readiness probes). |
+| **DataInitializer over data.sql** | Seed users created with runtime `PasswordEncoder` — guarantees BCrypt hashes are correct regardless of environment. |
+| **Custom 401/403 JSON responses** | API consumers get structured error JSON, not Spring's default HTML error pages. |
 
 ---
 
@@ -992,7 +1099,8 @@ terminationGracePeriodSeconds: 30
 | OS-specific commands | Wrong (assumed Unix) | Fixed for Windows/PowerShell |
 | Seed data + test isolation | Broke test suite with FK errors | Traced multi-context H2 conflict, fixed |
 | Fix cascading into new bug | `defer-datasource-initialization` broke startup | Understood boot sequence, chose `ddl-auto=none` |
-| Test design | Generated all 59 tests | Verified assertions match requirements |
+| Security (JWT + RBAC) | Generated security config + filter chain | Chose DataInitializer over hardcoded BCrypt hashes, fixed `Optional.orElseThrow()` for Java 8 |
+| Test design | Generated all 72 tests | Verified assertions match requirements |
 | State machine logic | Correct first try | Validated with parameterized tests |
 | README / documentation | First draft | Rewrote for accuracy, added this section |
 

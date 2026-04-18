@@ -16,6 +16,11 @@ spring:
       schema-locations: classpath:schema.sql
       data-locations:
 
+app:
+  jwt:
+    secret: TestSecretKeyThatIsAtLeast256BitsLongForHS256AlgorithmInTests
+    expiration-ms: 86400000
+
 order:
   scheduler:
     pending-to-processing-cron: "0 0 0 1 1 ?"

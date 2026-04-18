@@ -60,6 +60,11 @@ info:
     description: E-commerce Order Processing Backend
     java-version: ${java.version}
 
+app:
+  jwt:
+    secret: OrderProcessingSystemSecretKeyThatIsAtLeast256BitsLongForHS256
+    expiration-ms: 86400000
+
 order:
   scheduler:
     pending-to-processing-cron: "0 */5 * * * *"
