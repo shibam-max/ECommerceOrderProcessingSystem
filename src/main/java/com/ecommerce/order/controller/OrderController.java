@@ -10,6 +10,10 @@ import com.ecommerce.order.service.OrderService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -46,11 +50,26 @@ public class OrderController {
     }
 
     @GetMapping
-    @Operation(summary = "List all orders", description = "Returns all orders, optionally filtered by status")
-    public ResponseEntity<List<OrderResponse>> listOrders(
+    @Operation(summary = "List all orders (paginated)",
+               description = "Returns orders with pagination. Optionally filtered by status. " +
+                       "Defaults to page=0, size=20, sorted by createdAt descending.")
+    public ResponseEntity<Page<OrderResponse>> listOrders(
             @Parameter(description = "Filter by order status (PENDING, PROCESSING, SHIPPED, DELIVERED, CANCELLED)")
-            @RequestParam(required = false) OrderStatus status) {
-        return ResponseEntity.ok(orderService.listOrders(status));
+            @RequestParam(required = false) OrderStatus status,
+            @Parameter(description = "Page number (0-based)")
+            @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size (max 100)")
+            @RequestParam(defaultValue = "20") int size,
+            @Parameter(description = "Sort field (createdAt, totalAmount, customerName)")
+            @RequestParam(defaultValue = "createdAt") String sortBy,
+            @Parameter(description = "Sort direction (asc or desc)")
+            @RequestParam(defaultValue = "desc") String sortDir) {
+        int clampedSize = Math.min(size, 100);
+        Sort sort = sortDir.equalsIgnoreCase("asc")
+                ? Sort.by(sortBy).ascending()
+                : Sort.by(sortBy).descending();
+        Pageable pageable = PageRequest.of(page, clampedSize, sort);
+        return ResponseEntity.ok(orderService.listOrdersPaged(status, pageable));
     }
 
     @PatchMapping("/{id}/status")

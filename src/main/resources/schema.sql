@@ -40,4 +40,7 @@ CREATE TABLE IF NOT EXISTS app_user (
 
 CREATE INDEX IF NOT EXISTS idx_order_status ON customer_order (status);
 CREATE INDEX IF NOT EXISTS idx_order_customer_email ON customer_order (customer_email);
+CREATE INDEX IF NOT EXISTS idx_order_created_at ON customer_order (created_at);
+CREATE INDEX IF NOT EXISTS idx_order_status_created ON customer_order (status, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_order_id ON order_audit_log (order_id);
+CREATE INDEX IF NOT EXISTS idx_user_username ON app_user (username);

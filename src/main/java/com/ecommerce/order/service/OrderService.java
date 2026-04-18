@@ -15,6 +15,8 @@ import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.cache.annotation.Caching;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -76,6 +78,14 @@ public class OrderService {
             responses.add(OrderMapper.toResponse(order));
         }
         return responses;
+    }
+
+    @Transactional(readOnly = true)
+    public Page<OrderResponse> listOrdersPaged(OrderStatus status, Pageable pageable) {
+        Page<Order> orders = (status != null)
+                ? orderRepository.findByStatus(status, pageable)
+                : orderRepository.findAll(pageable);
+        return orders.map(OrderMapper::toResponse);
     }
 
     @Transactional

@@ -200,14 +200,16 @@ class OrderControllerIntegrationTest {
     class ListOrders {
 
         @Test
-        @DisplayName("should return all orders")
+        @DisplayName("should return all orders (paginated)")
         void shouldReturnAll() throws Exception {
             createOrderAndReturnId();
             createOrderAndReturnId();
 
             mockMvc.perform(get("/api/orders"))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$", hasSize(2)));
+                    .andExpect(jsonPath("$.content", hasSize(2)))
+                    .andExpect(jsonPath("$.totalElements").value(2))
+                    .andExpect(jsonPath("$.pageable").exists());
         }
 
         @Test
@@ -217,20 +219,35 @@ class OrderControllerIntegrationTest {
 
             mockMvc.perform(get("/api/orders").param("status", "PENDING"))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$", hasSize(1)))
-                    .andExpect(jsonPath("$[0].status").value("PENDING"));
+                    .andExpect(jsonPath("$.content", hasSize(1)))
+                    .andExpect(jsonPath("$.content[0].status").value("PENDING"));
 
             mockMvc.perform(get("/api/orders").param("status", "SHIPPED"))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$", hasSize(0)));
+                    .andExpect(jsonPath("$.content", hasSize(0)));
         }
 
         @Test
-        @DisplayName("should return empty list when no orders exist")
+        @DisplayName("should return empty page when no orders exist")
         void shouldReturnEmptyList() throws Exception {
             mockMvc.perform(get("/api/orders"))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$", hasSize(0)));
+                    .andExpect(jsonPath("$.content", hasSize(0)))
+                    .andExpect(jsonPath("$.totalElements").value(0));
+        }
+
+        @Test
+        @DisplayName("should respect page size parameter")
+        void shouldRespectPageSize() throws Exception {
+            createOrderAndReturnId();
+            createOrderAndReturnId();
+            createOrderAndReturnId();
+
+            mockMvc.perform(get("/api/orders").param("size", "2"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.content", hasSize(2)))
+                    .andExpect(jsonPath("$.totalElements").value(3))
+                    .andExpect(jsonPath("$.totalPages").value(2));
         }
     }
 

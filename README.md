@@ -22,7 +22,8 @@ Built as a coding assessment submission — designed to demonstrate clean archit
 - [System Design Patterns](#system-design-patterns)
 - [Distributed System Fundamentals](#distributed-system-fundamentals)
 - [Caching](#caching)
-- [Logging](#logging)
+- [Performance Optimization & Load Balancing Readiness](#performance-optimization--load-balancing-readiness)
+- [Logging, Tracing & Observability](#logging-tracing--observability)
 - [Kafka Integration](#kafka-integration)
 - [CI/CD Pipeline](#cicd-pipeline)
 - [Docker & Deployment](#docker--deployment)
@@ -185,14 +186,15 @@ GET /api/orders/{id}
 
 Returns **200 OK** with full order + items, or **404 Not Found**.
 
-### 3. List All Orders
+### 3. List All Orders (Paginated)
 
 ```
 GET /api/orders
 GET /api/orders?status=PENDING
+GET /api/orders?page=0&size=20&sortBy=createdAt&sortDir=desc
 ```
 
-Returns **200 OK** with an array. Optional `status` param filters by `PENDING`, `PROCESSING`, `SHIPPED`, `DELIVERED`, or `CANCELLED`.
+Returns **200 OK** with a paginated response. Optional `status` param filters by `PENDING`, `PROCESSING`, `SHIPPED`, `DELIVERED`, or `CANCELLED`. Supports `page`, `size` (max 100), `sortBy`, and `sortDir` parameters.
 
 ### 4. Update Order Status
 
@@ -933,6 +935,184 @@ When reporting an issue, include these fields for instant dev triage:
 Dev will search: grep "a3f8b2c1-" logs/order-processing.log
 → Shows the full request lifecycle in one search.
 ```
+
+---
+
+## Performance Optimization & Load Balancing Readiness
+
+### Pagination (API Scalability)
+
+`GET /api/orders` returns a **paginated response** using Spring Data's `Pageable` interface:
+
+```
+GET /api/orders?page=0&size=20&sortBy=createdAt&sortDir=desc
+GET /api/orders?status=PENDING&page=0&size=50
+```
+
+| Parameter | Default | Max | Description |
+|---|---|---|---|
+| `page` | 0 | - | Zero-based page number |
+| `size` | 20 | 100 | Items per page (server-side clamped to 100) |
+| `sortBy` | `createdAt` | - | Sort field: `createdAt`, `totalAmount`, `customerName` |
+| `sortDir` | `desc` | - | Sort direction: `asc` or `desc` |
+
+**Response includes pagination metadata:**
+```json
+{
+  "content": [ ... ],
+  "totalElements": 1234,
+  "totalPages": 62,
+  "size": 20,
+  "number": 0,
+  "first": true,
+  "last": false
+}
+```
+
+**Why this matters:** Without pagination, listing 100K orders loads them all into JVM heap and serializes a 50MB+ JSON response. With pagination, each page is ~20 orders (~10KB). Memory usage stays constant regardless of total order count.
+
+### Response Compression (Gzip)
+
+All JSON responses > 1KB are automatically gzip-compressed by the embedded Tomcat:
+
+```yaml
+server:
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain
+    min-response-size: 1024
+```
+
+Typical compression ratio for JSON: **~80% size reduction**. A 50KB order list becomes ~10KB on the wire.
+
+### Connection Pool Tuning (HikariCP)
+
+Explicit HikariCP configuration instead of Spring Boot defaults:
+
+| Setting | Value | Rationale |
+|---|---|---|
+| `maximum-pool-size` | 10 | Matches a mid-size deployment (10 concurrent DB connections) |
+| `minimum-idle` | 5 | Pre-warmed connections — no cold-start latency |
+| `idle-timeout` | 300000 (5 min) | Reclaims idle connections without being too aggressive |
+| `connection-timeout` | 20000 (20s) | Fail-fast if DB is unreachable |
+| `max-lifetime` | 1200000 (20 min) | Prevents stale connections (DB-side timeouts) |
+| `pool-name` | `OrderDB-HikariPool` | Named pool for monitoring visibility |
+
+### Async Thread Pool
+
+Non-critical side-effects (notifications, future webhook pushes) can run on a dedicated async thread pool:
+
+```
+Core threads:     4  (handles normal load)
+Max threads:      8  (burst capacity)
+Queue capacity:  50  (back-pressure — rejects when full)
+Thread prefix:   async-  (identifiable in thread dumps)
+```
+
+This keeps the HTTP request thread fast — the user gets a response immediately while background work completes asynchronously.
+
+### ETag Support (Conditional GET)
+
+Spring's `ShallowEtagHeaderFilter` generates ETags for all `/api/**` responses:
+
+```
+# First request:
+GET /api/orders/42  →  200 OK, ETag: "0a1b2c3d4e5f"
+
+# Second request (same data):
+GET /api/orders/42  If-None-Match: "0a1b2c3d4e5f"  →  304 Not Modified (no body)
+```
+
+Clients that support ETags (browsers, HTTP libraries, CDNs) automatically save bandwidth when polling for unchanged data.
+
+### Database Indexing Strategy
+
+| Index | Column(s) | Query Pattern |
+|---|---|---|
+| `idx_order_status` | `status` | `findByStatus()`, `bulkUpdatePendingToProcessing()` |
+| `idx_order_customer_email` | `customer_email` | Future: customer order lookup |
+| `idx_order_created_at` | `created_at` | Paginated listing (default sort) |
+| `idx_order_status_created` | `status, created_at` | Filtered + sorted pagination (composite) |
+| `idx_audit_order_id` | `order_id` | Audit trail lookup by order |
+| `idx_user_username` | `username` | JWT login / user lookup |
+
+The **composite index** `(status, created_at)` is critical — it covers the most common query pattern: "list PENDING orders, newest first" in a single index scan.
+
+### Query Optimization
+
+| Pattern | Naive Approach | Our Approach | Improvement |
+|---|---|---|---|
+| Get order + items | `findById()` + lazy load | `JOIN FETCH` in single query | Eliminates N+1 queries |
+| List with filter | `findAll()` + Java filter | `findByStatus()` at DB level | O(matching) vs O(all) |
+| Bulk status update | Load N entities, save N | Single `UPDATE WHERE` JPQL | O(1) round-trips |
+| Paginated list | Load all, sublist in Java | `Pageable` pushed to SQL | Constant memory usage |
+
+### Load Balancing Readiness
+
+This application is **horizontally scalable out of the box** — deploy N instances behind a load balancer with zero code changes:
+
+| Requirement | Status | How |
+|---|---|---|
+| **Stateless auth** | Done | JWT tokens — no server-side sessions. Any instance validates any request. |
+| **No sticky sessions** | Done | No `HttpSession` used anywhere. Round-robin LB works perfectly. |
+| **Health check endpoint** | Done | `GET /actuator/health` — LB can probe every instance. |
+| **Graceful shutdown** | Done | `server.shutdown: graceful` — LB drains connections before killing instance. |
+| **Connection pool per instance** | Done | HikariCP is instance-local. Each instance manages its own DB connections. |
+| **Cache per instance** | Done | Caffeine is instance-local (L1). Add Redis as shared L2 for consistency across instances. |
+| **Correlation ID propagation** | Done | LB can pass `X-Correlation-ID` header — all instances continue the trace. |
+| **Idempotency** | Done | Swap Caffeine store to Redis for cross-instance deduplication. |
+
+**Kubernetes deployment pattern:**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: order-service
+          ports:
+            - containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+          resources:
+            requests: { cpu: "250m", memory: "512Mi" }
+            limits:   { cpu: "1000m", memory: "1Gi" }
+---
+apiVersion: v1
+kind: Service
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8080
+  selector:
+    app: order-service
+```
+
+### Performance Summary
+
+| Optimization | Layer | Impact |
+|---|---|---|
+| **Pagination** | API | Constant memory usage, ~10KB per page vs unbounded |
+| **Gzip compression** | Transport | ~80% payload reduction |
+| **Caffeine cache** | Service | Eliminates DB hits for repeated reads |
+| **JOIN FETCH** | Repository | No N+1 queries — single round-trip |
+| **Bulk SQL** | Repository | Scheduler updates all PENDING orders in one query |
+| **HikariCP tuning** | Database | Pre-warmed connections, fail-fast on DB issues |
+| **Async thread pool** | Infrastructure | Non-blocking side-effects |
+| **ETag / 304** | Transport | Zero-body responses for unchanged data |
+| **Composite indexes** | Database | Single index scan for filtered+sorted pagination |
+| **Stateless JWT** | Security | Any instance handles any request — no shared state |
 
 ---
 

@@ -7,6 +7,13 @@ spring:
     driver-class-name: org.h2.Driver
     username: sa
     password:
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      idle-timeout: 300000
+      connection-timeout: 20000
+      max-lifetime: 1200000
+      pool-name: OrderDB-HikariPool
 
   h2:
     console:
@@ -31,6 +38,10 @@ spring:
 server:
   port: 8080
   shutdown: graceful
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain
+    min-response-size: 1024
 
 spring.lifecycle:
   timeout-per-shutdown-phase: 30s
