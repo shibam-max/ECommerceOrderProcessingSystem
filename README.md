@@ -1362,6 +1362,26 @@ terminationGracePeriodSeconds: 30
 
 **Lesson:** AI applied a fix in isolation without understanding the cascade effect. It didn't connect that deferring SQL scripts would starve Hibernate's validator. A human had to read the full stack trace, understand the Spring Boot initialization sequence, and pick a configuration that satisfies both runtime startup and test isolation simultaneously.
 
+#### 7. Idempotency Filter Leaking Auth Tokens (Security Bug)
+
+**What AI did wrong:** AI implemented an `IdempotencyFilter` that cached the response body of every successful `POST` request, keyed solely by the `X-Idempotency-Key` header. It applied this filter globally — including to `/api/auth/login` and `/api/auth/register`.
+
+**What could have happened:** If two different users sent `POST /api/auth/login` with the same idempotency key (e.g., a retry header from a shared API gateway), the second user would receive the **first user's JWT token**. This is a critical authentication bypass — one user could be logged in as another.
+
+**How it was fixed:** A human recognized during a security audit that idempotency is a **domain concept for order creation**, not an infrastructure blanket for all POST endpoints. Added a path check to skip `/api/auth/**` from the filter entirely.
+
+**Lesson:** AI applied a cross-cutting concern (idempotency) uniformly without reasoning about security boundaries. It didn't understand that auth endpoints are identity-sensitive and must never return cached responses from a different user. This required a human to think adversarially — "what happens if a malicious client reuses this key?"
+
+#### 8. CI Smoke Test: `curl -f` Fails on Expected 401 Response
+
+**What AI did wrong:** After adding JWT security, AI updated the CI smoke test to verify that unauthenticated requests return 401. It used `curl -sf -o /dev/null -w "%{http_code}"` to capture the HTTP status. The problem: the `-f` (fail) flag tells curl to **exit with code 22** on any non-2xx response.
+
+**What happened:** The CI pipeline passed health checks, Swagger verification, login, and authenticated API tests — then failed at the very last step. Curl received the expected 401 but immediately exited with code 22 *before* the script could compare the status code. GitHub Actions killed the job.
+
+**How it was fixed:** A human read the CI log, saw `exit code 22`, recognized it as curl's `-f` behavior, and removed the `-f` flag from that specific curl call. The intent was to *observe* the 401, not *fail* on it.
+
+**Lesson:** AI generated logically correct test logic ("check that 401 is returned") but used the wrong tool flags. It didn't understand that `-f` and "capture the status code" are contradictory goals. A human had to read the CI output, understand curl's exit code semantics, and make the minimal surgical fix.
+
 ### Summary: AI + Human Collaboration
 
 | What | AI | Human |
@@ -1373,6 +1393,8 @@ terminationGracePeriodSeconds: 30
 | OS-specific commands | Wrong (assumed Unix) | Fixed for Windows/PowerShell |
 | Seed data + test isolation | Broke test suite with FK errors | Traced multi-context H2 conflict, fixed |
 | Fix cascading into new bug | `defer-datasource-initialization` broke startup | Understood boot sequence, chose `ddl-auto=none` |
+| Idempotency + auth endpoints | Applied filter globally (security bug) | Identified token leakage risk, excluded auth paths |
+| CI smoke test flags | Used `curl -f` on expected 401 (exit code 22) | Read CI logs, understood curl semantics, removed `-f` |
 | Security (JWT + RBAC) | Generated security config + filter chain | Chose DataInitializer over hardcoded BCrypt, chose stateless JWT for scalability, fixed Java 8 issues |
 | Observability & Logging | Generated basic log statements | Designed request logging filter, AOP perf timing with SLOW thresholds, runtime log-level control, QA bug report template |
 | Performance & Scalability | Generated unbounded `findAll()` | Added pagination (Page<>), gzip, HikariCP tuning, async executor, ETag, composite indexes |
