@@ -104,7 +104,7 @@ jobs:
           curl -f -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/orders || (docker logs test-app && exit 1)
           echo ""
           echo "=== Unauthenticated request returns 401 ==="
-          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:8080/api/orders)
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/orders)
           [ "$STATUS" = "401" ] && echo "401 confirmed (security working)" || (echo "Expected 401, got $STATUS" && exit 1)
           echo "All smoke tests passed."
           docker stop test-app
