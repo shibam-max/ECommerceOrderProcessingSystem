@@ -28,6 +28,12 @@
     <logger name="com.ecommerce.order" level="INFO"/>
     <logger name="com.ecommerce.order.scheduler" level="DEBUG"/>
 
+    <!-- Performance logging: DEBUG shows all timings, WARN shows only slow (>500ms) -->
+    <logger name="PERF" level="DEBUG"/>
+
+    <!-- Request logging filter -->
+    <logger name="com.ecommerce.order.filter.RequestLoggingFilter" level="INFO"/>
+
     <!-- Reduce noise from frameworks -->
     <logger name="org.hibernate.SQL" level="WARN"/>
     <logger name="org.springframework" level="WARN"/>

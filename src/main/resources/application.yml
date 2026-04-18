@@ -45,10 +45,14 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,caches
+        include: health,info,metrics,caches,loggers,env
   endpoint:
     health:
       show-details: always
+    loggers:
+      enabled: true
+    env:
+      enabled: true
   info:
     env:
       enabled: true

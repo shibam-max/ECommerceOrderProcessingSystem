@@ -809,23 +809,25 @@ For a single-instance H2-backed application, an in-process cache avoids network 
 
 ---
 
-## Logging
+## Logging, Tracing & Observability
 
 ### Architecture
 
-We use **SLF4J + Logback** with a production-grade configuration:
+We use **SLF4J + Logback** with a production-grade configuration, combined with request-level tracing, performance monitoring, and runtime-configurable log levels.
 
 | Component | Level | Purpose |
 |---|---|---|
 | `com.ecommerce.order` | INFO | Business operations (order created, status changed, cancelled) |
 | `com.ecommerce.order.scheduler` | DEBUG | Scheduler heartbeat and promotion counts |
+| `com.ecommerce.order.filter.RequestLoggingFilter` | INFO | HTTP request logging (method, URI, status, duration) |
+| `PERF` | DEBUG | AOP performance timing for service/controller methods |
 | `com.ecommerce.order.event` | INFO | Kafka/event publishing confirmations |
 | `org.hibernate.SQL` | WARN | Suppress SQL noise in production |
 | `org.springframework` | WARN | Suppress framework noise |
 
 ### Output Targets
 
-1. **Console** — Structured format: `timestamp [thread] level logger - message`
+1. **Console** — Structured format: `timestamp [thread] [correlationId] level logger - message`
 2. **Rolling File** — `logs/order-processing.log` with:
    - Size-based rotation: 10MB per file
    - Time-based rotation: daily
@@ -833,12 +835,103 @@ We use **SLF4J + Logback** with a production-grade configuration:
 
 ### What Gets Logged
 
+Every HTTP request produces a complete trace — from ingress to response — all tied by a single correlation ID:
+
 ```
-2026-04-17 10:15:30.123 [http-nio-8080-exec-1] INFO  c.e.order.service.OrderService - Created order id=42 for customer=alice@example.com
-2026-04-17 10:15:45.456 [http-nio-8080-exec-3] INFO  c.e.order.service.OrderService - Order id=42 status changed PENDING -> PROCESSING
-2026-04-17 10:20:00.001 [scheduling-1] DEBUG c.e.o.scheduler.OrderStatusScheduler - Running scheduled promotion of PENDING orders to PROCESSING
-2026-04-17 10:20:00.050 [scheduling-1] INFO  c.e.order.service.OrderService - Promoted 5 PENDING order(s) to PROCESSING
-2026-04-17 10:15:30.130 [http-nio-8080-exec-1] INFO  c.e.o.event.OrderEventListener - [NOTIFICATION] Order #42 confirmation sent to alice@example.com
+2026-04-17 10:15:30.100 [exec-1] [a3f8b2c1-...] INFO  RequestLoggingFilter  - HTTP 201 POST /api/orders [23ms]
+2026-04-17 10:15:30.105 [exec-1] [a3f8b2c1-...] DEBUG PERF                  - PERF OK OrderService.createOrder(..) [18ms]
+2026-04-17 10:15:30.110 [exec-1] [a3f8b2c1-...] INFO  OrderService          - Created order id=42 for customer=alice@example.com
+2026-04-17 10:15:30.120 [exec-1] [a3f8b2c1-...] INFO  OrderEventListener    - [NOTIFICATION] Order #42 confirmation sent to alice@example.com
+
+2026-04-17 10:15:45.450 [exec-3] [b7e4d9f2-...] WARN  RequestLoggingFilter  - HTTP 404 GET /api/orders/999 [5ms]
+2026-04-17 10:15:50.200 [exec-5] [c1a2b3c4-...] WARN  PERF                  - SLOW OK OrderService.listOrders(..) [612ms]
+
+2026-04-17 10:20:00.001 [scheduling-1] [no-correlation] DEBUG OrderStatusScheduler - Running scheduled promotion of PENDING orders to PROCESSING
+2026-04-17 10:20:00.050 [scheduling-1] [no-correlation] INFO  OrderService         - Promoted 5 PENDING order(s) to PROCESSING
+```
+
+### Request Logging (Dev/QA Essential)
+
+`RequestLoggingFilter` logs every API request with:
+
+| Field | Example | Why QA Needs It |
+|---|---|---|
+| HTTP status | `200`, `404`, `500` | Immediate pass/fail visibility |
+| Method | `POST`, `GET`, `PATCH` | Know which operation was called |
+| URI + query | `/api/orders?status=PENDING` | Full path for reproduction steps |
+| Duration | `[23ms]` | Identifies slow requests instantly |
+| Correlation ID | `[a3f8b2c1-...]` (from MDC) | Search all logs for this request's full lifecycle |
+
+Log levels are status-aware: `INFO` for 2xx, `WARN` for 4xx, `ERROR` for 5xx. Actuator, Swagger, and H2-console requests are excluded to reduce noise.
+
+### Performance Monitoring (AOP Aspect)
+
+`PerformanceLoggingAspect` wraps every public method in the `service` and `controller` layers with execution timing:
+
+- **< 500ms** → logged at `DEBUG` level (visible when investigating, quiet in production)
+- **>= 500ms** → logged at `WARN` level (`SLOW` prefix — stands out in log aggregators)
+
+```
+# Normal operation:
+DEBUG PERF OK OrderService.getOrder(..) [3ms]
+
+# Slow operation (triggers alert threshold):
+WARN  SLOW OK OrderService.listOrders(..) [612ms]
+
+# Failed operation:
+DEBUG PERF FAIL OrderService.updateOrderStatus(..) [2ms]
+```
+
+### Runtime Log-Level Control (Zero-Downtime Debugging)
+
+QA or dev can change log levels at runtime without restarting the application:
+
+```bash
+# Check current log level for a logger:
+GET /actuator/loggers/com.ecommerce.order
+
+# Enable DEBUG for the entire app (see SQL queries, cache misses, perf timings):
+POST /actuator/loggers/com.ecommerce.order
+Content-Type: application/json
+{"configuredLevel": "DEBUG"}
+
+# Enable SQL logging temporarily:
+POST /actuator/loggers/org.hibernate.SQL
+Content-Type: application/json
+{"configuredLevel": "DEBUG"}
+
+# Turn it back off:
+POST /actuator/loggers/org.hibernate.SQL
+Content-Type: application/json
+{"configuredLevel": "WARN"}
+```
+
+This is exposed via Spring Actuator at `/actuator/loggers`. In Kubernetes, ops teams use this to turn on DEBUG during an incident and back to WARN when done — no redeployment needed.
+
+### Observability Endpoints (Spring Actuator)
+
+| Endpoint | What It Shows | Who Uses It |
+|---|---|---|
+| `GET /actuator/health` | App health + DB connectivity + disk space | K8s probes, monitoring dashboards |
+| `GET /actuator/info` | App name, version, Java version | QA verifying deployed version |
+| `GET /actuator/metrics` | JVM memory, HTTP request counts, cache stats | Performance engineers, Grafana |
+| `GET /actuator/caches` | Cache names, sizes, hit/miss ratios | Dev investigating cache behavior |
+| `GET /actuator/loggers` | Current log levels for every logger | Dev/QA changing log verbosity at runtime |
+| `GET /actuator/env` | Effective config (profiles, properties) | Dev verifying which profile/config is active |
+
+### For QA: Bug Report Template
+
+When reporting an issue, include these fields for instant dev triage:
+
+```
+1. Correlation ID: [from X-Correlation-ID response header]
+2. Endpoint: [e.g., POST /api/orders]
+3. Request body: [the JSON you sent]
+4. Response status: [e.g., 500]
+5. Timestamp: [when it happened]
+
+Dev will search: grep "a3f8b2c1-" logs/order-processing.log
+→ Shows the full request lifecycle in one search.
 ```
 
 ---
