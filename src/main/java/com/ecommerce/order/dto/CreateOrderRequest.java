@@ -1,18 +1,11 @@
 package com.ecommerce.order.dto;
 
-import lombok.*;
-
 import javax.validation.Valid;
 import javax.validation.constraints.Email;
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotEmpty;
 import java.util.List;
 
-@Getter
-@Setter
-@NoArgsConstructor
-@AllArgsConstructor
-@Builder
 public class CreateOrderRequest {
 
     @NotBlank(message = "Customer name is required")
@@ -25,4 +18,37 @@ public class CreateOrderRequest {
     @NotEmpty(message = "Order must contain at least one item")
     @Valid
     private List<OrderItemRequest> items;
+
+    public CreateOrderRequest() {}
+
+    public CreateOrderRequest(String customerName, String customerEmail, List<OrderItemRequest> items) {
+        this.customerName = customerName;
+        this.customerEmail = customerEmail;
+        this.items = items;
+    }
+
+    public String getCustomerName() { return customerName; }
+    public void setCustomerName(String customerName) { this.customerName = customerName; }
+
+    public String getCustomerEmail() { return customerEmail; }
+    public void setCustomerEmail(String customerEmail) { this.customerEmail = customerEmail; }
+
+    public List<OrderItemRequest> getItems() { return items; }
+    public void setItems(List<OrderItemRequest> items) { this.items = items; }
+
+    public static Builder builder() { return new Builder(); }
+
+    public static class Builder {
+        private String customerName;
+        private String customerEmail;
+        private List<OrderItemRequest> items;
+
+        public Builder customerName(String customerName) { this.customerName = customerName; return this; }
+        public Builder customerEmail(String customerEmail) { this.customerEmail = customerEmail; return this; }
+        public Builder items(List<OrderItemRequest> items) { this.items = items; return this; }
+
+        public CreateOrderRequest build() {
+            return new CreateOrderRequest(customerName, customerEmail, items);
+        }
+    }
 }

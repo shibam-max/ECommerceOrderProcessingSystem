@@ -19,6 +19,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -86,6 +87,28 @@ public class OrderService {
         return orders.map(OrderMapper::toResponse);
     }
 
+    @Transactional(readOnly = true)
+    public OrderInsightsResponse getOrderInsights() {
+        long totalOrders = orderRepository.count();
+        long pendingOrders = orderRepository.countByStatus(OrderStatus.PENDING);
+        long processingOrders = orderRepository.countByStatus(OrderStatus.PROCESSING);
+        long shippedOrders = orderRepository.countByStatus(OrderStatus.SHIPPED);
+        long deliveredOrders = orderRepository.countByStatus(OrderStatus.DELIVERED);
+        long cancelledOrders = orderRepository.countByStatus(OrderStatus.CANCELLED);
+
+        BigDecimal totalRevenue = defaultIfNull(orderRepository.sumTotalAmount());
+        Double avgOrderValueRaw = orderRepository.averageTotalAmount();
+        BigDecimal averageOrderValue = avgOrderValueRaw == null
+                ? BigDecimal.ZERO
+                : BigDecimal.valueOf(avgOrderValueRaw);
+        BigDecimal pendingRevenue = defaultIfNull(orderRepository.sumTotalAmountByStatus(OrderStatus.PENDING));
+
+        return new OrderInsightsResponse(
+                totalOrders, pendingOrders, processingOrders,
+                shippedOrders, deliveredOrders, cancelledOrders,
+                totalRevenue, averageOrderValue, pendingRevenue);
+    }
+
     @Transactional
     @CacheEvict(value = "orders", key = "#id")
     public OrderResponse updateOrderStatus(Long id, UpdateStatusRequest request) {
@@ -146,5 +169,9 @@ public class OrderService {
     private Order findOrderOrThrow(Long id) {
         return orderRepository.findByIdWithItems(id)
                 .orElseThrow(() -> new OrderNotFoundException(id));
+    }
+
+    private BigDecimal defaultIfNull(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
     }
 }

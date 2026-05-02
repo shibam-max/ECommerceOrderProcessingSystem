@@ -66,6 +66,27 @@ Built as a coding assessment submission — designed to demonstrate clean archit
 
 ## Architecture Overview
 
+### Component Diagram (Mermaid)
+
+```mermaid
+flowchart TD
+    C[Client / Swagger / Postman] --> F1[CorrelationIdFilter]
+    F1 --> F2[IdempotencyFilter]
+    F2 --> F3[RateLimitingFilter]
+    F3 --> F4[RequestLoggingFilter]
+    F4 --> SEC[JWT Auth Filter Chain]
+    SEC --> OC[OrderController]
+    OC --> OS[OrderService]
+    OS --> OR[OrderRepository]
+    OR --> DB[(H2 / PostgreSQL-ready schema)]
+    OS --> EV[Spring Domain Events]
+    EV --> AUD[OrderEventListener]
+    AUD --> ADB[(order_audit_log)]
+    SCH[OrderStatusScheduler] --> OS
+    KP[KafkaOrderEventPublisher profile:kafka] --> K[(Kafka Topics)]
+    EV -. after commit .-> KP
+```
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                        REST Client                           │
@@ -215,6 +236,29 @@ POST /api/orders/{id}/cancel
 ```
 
 Returns **200 OK** with status `CANCELLED` if the order was `PENDING`. Returns **409 Conflict** if the order has already progressed past `PENDING`.
+
+### 6. Order Insights (Admin)
+
+```
+GET /api/orders/insights
+Authorization: Bearer <admin-jwt>
+```
+
+Returns aggregated operational metrics and revenue snapshot:
+
+```json
+{
+  "totalOrders": 10,
+  "pendingOrders": 3,
+  "processingOrders": 2,
+  "shippedOrders": 2,
+  "deliveredOrders": 2,
+  "cancelledOrders": 1,
+  "totalRevenue": 1500.00,
+  "averageOrderValue": 150.00,
+  "pendingRevenue": 400.00
+}
+```
 
 ---
 

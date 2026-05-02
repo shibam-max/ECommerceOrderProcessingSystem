@@ -1,7 +1,6 @@
 package com.ecommerce.order.audit;
 
 import com.ecommerce.order.model.OrderStatus;
-import lombok.*;
 
 import javax.persistence.*;
 import java.time.LocalDateTime;
@@ -14,10 +13,6 @@ import java.time.LocalDateTime;
  */
 @Entity
 @Table(name = "order_audit_log")
-@Getter
-@NoArgsConstructor(access = AccessLevel.PROTECTED)
-@AllArgsConstructor
-@Builder
 public class OrderAuditLog {
 
     @Id
@@ -44,10 +39,55 @@ public class OrderAuditLog {
     @Column(name = "occurred_at", nullable = false, updatable = false)
     private LocalDateTime occurredAt;
 
+    protected OrderAuditLog() {}
+
+    public OrderAuditLog(Long id, Long orderId, String eventType, OrderStatus oldStatus,
+                         OrderStatus newStatus, String detail, LocalDateTime occurredAt) {
+        this.id = id;
+        this.orderId = orderId;
+        this.eventType = eventType;
+        this.oldStatus = oldStatus;
+        this.newStatus = newStatus;
+        this.detail = detail;
+        this.occurredAt = occurredAt;
+    }
+
     @PrePersist
     protected void onCreate() {
         if (this.occurredAt == null) {
             this.occurredAt = LocalDateTime.now();
+        }
+    }
+
+    public Long getId() { return id; }
+    public Long getOrderId() { return orderId; }
+    public String getEventType() { return eventType; }
+    public OrderStatus getOldStatus() { return oldStatus; }
+    public OrderStatus getNewStatus() { return newStatus; }
+    public String getDetail() { return detail; }
+    public LocalDateTime getOccurredAt() { return occurredAt; }
+
+    public static Builder builder() { return new Builder(); }
+
+    public static class Builder {
+        private Long id;
+        private Long orderId;
+        private String eventType;
+        private OrderStatus oldStatus;
+        private OrderStatus newStatus;
+        private String detail;
+        private LocalDateTime occurredAt;
+
+        public Builder id(Long id) { this.id = id; return this; }
+        public Builder orderId(Long orderId) { this.orderId = orderId; return this; }
+        public Builder eventType(String eventType) { this.eventType = eventType; return this; }
+        public Builder oldStatus(OrderStatus oldStatus) { this.oldStatus = oldStatus; return this; }
+        public Builder newStatus(OrderStatus newStatus) { this.newStatus = newStatus; return this; }
+        public Builder detail(String detail) { this.detail = detail; return this; }
+        public Builder occurredAt(LocalDateTime occurredAt) { this.occurredAt = occurredAt; return this; }
+
+        public OrderAuditLog build() {
+            return new OrderAuditLog(id, orderId, eventType, oldStatus, newStatus, detail, occurredAt);
         }
     }
 }

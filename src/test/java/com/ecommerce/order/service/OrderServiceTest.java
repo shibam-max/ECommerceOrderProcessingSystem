@@ -302,4 +302,55 @@ class OrderServiceTest {
             assertThat(count).isZero();
         }
     }
+
+    @Nested
+    @DisplayName("getOrderInsights")
+    class GetOrderInsights {
+
+        @Test
+        @DisplayName("should return aggregated order insights")
+        void shouldReturnOrderInsights() {
+            when(orderRepository.count()).thenReturn(10L);
+            when(orderRepository.countByStatus(OrderStatus.PENDING)).thenReturn(3L);
+            when(orderRepository.countByStatus(OrderStatus.PROCESSING)).thenReturn(2L);
+            when(orderRepository.countByStatus(OrderStatus.SHIPPED)).thenReturn(2L);
+            when(orderRepository.countByStatus(OrderStatus.DELIVERED)).thenReturn(2L);
+            when(orderRepository.countByStatus(OrderStatus.CANCELLED)).thenReturn(1L);
+            when(orderRepository.sumTotalAmount()).thenReturn(new BigDecimal("1500.00"));
+            when(orderRepository.averageTotalAmount()).thenReturn(150.0);
+            when(orderRepository.sumTotalAmountByStatus(OrderStatus.PENDING)).thenReturn(new BigDecimal("400.00"));
+
+            OrderInsightsResponse response = orderService.getOrderInsights();
+
+            assertThat(response.getTotalOrders()).isEqualTo(10L);
+            assertThat(response.getPendingOrders()).isEqualTo(3L);
+            assertThat(response.getProcessingOrders()).isEqualTo(2L);
+            assertThat(response.getShippedOrders()).isEqualTo(2L);
+            assertThat(response.getDeliveredOrders()).isEqualTo(2L);
+            assertThat(response.getCancelledOrders()).isEqualTo(1L);
+            assertThat(response.getTotalRevenue()).isEqualByComparingTo("1500.00");
+            assertThat(response.getAverageOrderValue()).isEqualByComparingTo("150.0");
+            assertThat(response.getPendingRevenue()).isEqualByComparingTo("400.00");
+        }
+
+        @Test
+        @DisplayName("should default aggregate amounts to zero when repository returns null")
+        void shouldDefaultInsightsAmountsToZeroWhenNull() {
+            when(orderRepository.count()).thenReturn(0L);
+            when(orderRepository.countByStatus(OrderStatus.PENDING)).thenReturn(0L);
+            when(orderRepository.countByStatus(OrderStatus.PROCESSING)).thenReturn(0L);
+            when(orderRepository.countByStatus(OrderStatus.SHIPPED)).thenReturn(0L);
+            when(orderRepository.countByStatus(OrderStatus.DELIVERED)).thenReturn(0L);
+            when(orderRepository.countByStatus(OrderStatus.CANCELLED)).thenReturn(0L);
+            when(orderRepository.sumTotalAmount()).thenReturn(null);
+            when(orderRepository.averageTotalAmount()).thenReturn(null);
+            when(orderRepository.sumTotalAmountByStatus(OrderStatus.PENDING)).thenReturn(null);
+
+            OrderInsightsResponse response = orderService.getOrderInsights();
+
+            assertThat(response.getTotalRevenue()).isEqualByComparingTo("0");
+            assertThat(response.getAverageOrderValue()).isEqualByComparingTo("0");
+            assertThat(response.getPendingRevenue()).isEqualByComparingTo("0");
+        }
+    }
 }

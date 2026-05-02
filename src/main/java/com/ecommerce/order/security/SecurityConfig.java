@@ -76,6 +76,7 @@ public class SecurityConfig {
                 // Admin-only endpoints
                 .antMatchers(HttpMethod.PATCH, "/api/orders/*/status").hasRole("ADMIN")
                 .antMatchers(HttpMethod.GET, "/api/orders/*/audit").hasRole("ADMIN")
+                .antMatchers(HttpMethod.GET, "/api/orders/insights").hasRole("ADMIN")
                 // Authenticated endpoints (any role)
                 .antMatchers("/api/orders/**").authenticated()
                 .anyRequest().authenticated()

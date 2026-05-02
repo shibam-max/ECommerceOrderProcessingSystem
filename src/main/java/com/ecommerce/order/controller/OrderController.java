@@ -3,6 +3,7 @@ package com.ecommerce.order.controller;
 import com.ecommerce.order.audit.OrderAuditRepository;
 import com.ecommerce.order.audit.OrderAuditResponse;
 import com.ecommerce.order.dto.CreateOrderRequest;
+import com.ecommerce.order.dto.OrderInsightsResponse;
 import com.ecommerce.order.dto.OrderResponse;
 import com.ecommerce.order.dto.UpdateStatusRequest;
 import com.ecommerce.order.model.OrderStatus;
@@ -94,5 +95,11 @@ public class OrderController {
         new ArrayList<>(auditRepository.findByOrderIdOrderByOccurredAtAsc(id))
                 .forEach(log -> responses.add(OrderAuditResponse.fromEntity(log)));
         return ResponseEntity.ok(responses);
+    }
+
+    @GetMapping("/insights")
+    @Operation(summary = "Get order insights", description = "Returns aggregated counts and revenue metrics across order statuses")
+    public ResponseEntity<OrderInsightsResponse> getOrderInsights() {
+        return ResponseEntity.ok(orderService.getOrderInsights());
     }
 }
